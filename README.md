@@ -117,7 +117,7 @@ For the bot to work, you need to give it your login info and Telegram keys secur
 
 ### Secret #7
 **Name**: `NTFY_TOPIC`
-**Secret**: `redacted-alert-8f39x`
+**Secret**: `my-secret-topic-8f39x`
 *(Paste the random topic name you created in Step 3)*
 
 ---
