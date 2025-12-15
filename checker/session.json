@@ -1,0 +1,115 @@
+{
+  "cookies": [
+    {
+      "name": "ahoy_visitor",
+      "value": "9634afe8-c55d-4001-83a7-3a650e67e0fd",
+      "domain": ".cgtrader.com",
+      "path": "/",
+      "expires": 1800383281.151819,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "ahoy_visit",
+      "value": "5cd86403-49b2-43ed-95f6-2febd2e38499",
+      "domain": ".cgtrader.com",
+      "path": "/",
+      "expires": 1765830542.246712,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_hjSessionUser_1182264",
+      "value": "eyJpZCI6Ijk1NDcyNDdlLWU3NzUtNTBjMS1hNGQ4LTliNTVkZTU1NDk4MCIsImNyZWF0ZWQiOjE3NjU4MjMyODI0MDgsImV4aXN0aW5nIjp0cnVlfQ==",
+      "domain": ".cgtrader.com",
+      "path": "/",
+      "expires": 1797359341,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "_hjSession_1182264",
+      "value": "eyJpZCI6IjA2Y2Q1YWNkLTBhNmItNGZmNS1hNzY4LTk2MzdjNDQ3Y2M0ZiIsImMiOjE3NjU4MjMyODI0MDksInMiOjEsInIiOjAsInNiIjowLCJzciI6MCwic2UiOjAsImZzIjoxLCJzcCI6MX0=",
+      "domain": ".cgtrader.com",
+      "path": "/",
+      "expires": 1765825082,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "_gid",
+      "value": "GA1.2.1607529014.1765823283",
+      "domain": ".cgtrader.com",
+      "path": "/",
+      "expires": 1765909741,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_ga_NLB6RHHZ55",
+      "value": "GS2.1.s1765823282$o1$g1$t1765823341$j1$l0$h0",
+      "domain": ".cgtrader.com",
+      "path": "/",
+      "expires": 1800383341.845987,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_ga",
+      "value": "GA1.2.118076",
+      "domain": ".cgtrader.com",
+      "path": "/",
+      "expires": 1800383341.867414,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "Lax"
+    },
+    {
+      "name": "_wildcat_session",
+      "value": "pF9Dp34Cc4enBVjDr6yMC5HfKZgRrKAlHjeRuWrzj2yIAKY8u0JIoIrDe0V8DiYPvCeYnYcXARDbjHPHSHg1%2BsJZK9qfKeQYjsNWW0ZAV4tAzNItlLAv%2Bl4F2MMQfCjXQafnQreITxRAS%2FuqCrdRgcLEjQ%2FvvFTo%2BCjdNAbRf8cupTBSgwm19j1ybsPZiC7Mcxq78O05%2B2YctYAGyaX6EIsLOacoVRd7HWVJ0ERFlULcUJkpK55VCbdKXr8btNC11%2FdcXbaspcVYlX1MFcVsQtY2sjMgvgQ6wQYxfm4YaDfjFKnrI2Wjxp8a4FL%2Feta5rC%2B7YpMewb9Oyw04%2BINHKFYUmeKV%2FfkW1zbPZw7PBHlO9iej2dvlE0pRVKOql74hT95vHczg%2BLRQhAdYbmFxU916nybCCfzB%2BgezEAUhbZJaCTFaHn0%2F6Q%3D%3D--Kr%2BK%2Bl77Ew8fwlAd--Eclb%2F4XT7TBwc%2Bj78CgZUg%3D%3D",
+      "domain": "wildcat.cgtrader.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://wildcat.cgtrader.com",
+      "localStorage": [
+        {
+          "name": "ZD-store",
+          "value": "{\"activeEmbed\":\"nilEmbed\",\"widgetShown\":false,\"is_chatting\":false}"
+        },
+        {
+          "name": "ZD-suid",
+          "value": "{\"id\":\"71d5b87cb60f40aaa3de15349c83213d\",\"expiry\":1765824243909,\"tabs\":{\"count\":1,\"expiry\":0}}"
+        },
+        {
+          "name": "ZD-settings",
+          "value": "[[\"b81d8430a865fa62a30e5580e5311d4e05098a30\",1765823285]]"
+        },
+        {
+          "name": "unread-notifications-count-118076",
+          "value": "{\"createdAt\":\"2025-12-15T18:28:39.096Z\",\"value\":0}"
+        },
+        {
+          "name": "unread-messages-count-118076",
+          "value": "{\"createdAt\":\"2025-12-15T18:28:39.092Z\",\"value\":0}"
+        },
+        {
+          "name": "ZD-buid",
+          "value": "71cadf64383742bfaeeff6b6d60d3625"
+        }
+      ]
+    }
+  ]
+}
