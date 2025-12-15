@@ -34,10 +34,10 @@ This app can also send push notifications to your phone using **ntfy.sh** (free,
 
 1.  **Download the "ntfy" app** on your phone (Android or iOS).
 2.  **Make up a secret topic name**. It should be random so others don't guess it.
-    *   Example: `redacted-alert-8f39x` (Don't use this one, make your own!)
+    *   Example: `my-secret-topic-8f39x` (Don't use this one, make your own!)
 3.  **Open the app** and subscribe to your topic.
     *   Tap the `+` button.
-    *   Enter your topic name (e.g., `redacted-alert-8f39x`).
+    *   Enter your topic name (e.g., `my-secret-topic-8f39x`).
     *   Tap **Subscribe**.
 4.  **Test it**:
     *   Go to `https://ntfy.sh/YOUR_TOPIC_NAME` in your browser.
@@ -51,7 +51,9 @@ This app can also send push notifications to your phone using **ntfy.sh** (free,
 2. Upload all the files in this folder to that repository.
 3. (Or if you know how to use Git, push this code to the new repo).
 
-### Step 4: Add Secrets (The Most Important Step!)
+---
+
+## 🔑 Step 4: Add Your Secrets (Sensitive Info)
 For the bot to work, you need to give it your login info and Telegram keys securely.
 1. Go to your GitHub Repository page.
 2. Click **Settings** (top right tab).
