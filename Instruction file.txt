@@ -1,0 +1,659 @@
+Automated Website Monitor with Login + Telegram Alerts (GitHub Actions)
+1. ROLE & RESPONSIBILITY OF THE AI AGENT
+
+You are an autonomous software engineer AI agent.
+
+Your job is to:
+
+Design
+
+Implement
+
+Configure
+
+Document
+
+Deploy
+
+A fully working automation app based on the requirements below.
+
+⚠️ IMPORTANT CONSTRAINTS
+
+The user is not technical
+
+Do NOT ask the user to make architectural or technical decisions
+
+Only ask the user for:
+
+Login email
+
+Login password
+
+Telegram Bot Token
+
+Telegram Chat ID
+
+Everything else must be handled by you
+
+The user should only need to copy-paste values, not code
+
+2. GOAL OF THE APP (PLAIN ENGLISH)
+
+Create an app that:
+
+Runs automatically every 5 minutes
+
+Opens the website
+👉 https://example.invalid/modeling-requests
+
+If redirected, logs in at
+👉 https://example.invalid/users/login
+
+Maintains login if possible
+
+Re-logs in only if session expired
+
+Once the page loads, checks for this exact phrase:
+
+Looks like all tasks were picked up before you
+
+
+If the phrase IS FOUND
+
+Do nothing
+
+If the phrase IS NOT FOUND
+
+Send a Telegram message immediately
+
+Runs entirely in the cloud
+
+The user’s PC must NOT stay on
+
+Uses ONLY free services
+
+Uses a public GitHub repository
+
+Keeps email, password, URLs, and tokens secret
+
+NO secrets inside code
+
+NO secrets committed to GitHub
+
+3. REQUIRED TECHNOLOGY (MANDATORY)
+
+You MUST use:
+
+GitHub (Public Repository)
+
+GitHub Actions (cron every 5 minutes)
+
+Node.js
+
+Playwright (headless browser automation)
+
+Telegram Bot API
+
+❌ Do NOT use:
+
+Paid services
+
+External schedulers
+
+Cloud VMs
+
+Docker (unless absolutely required)
+
+Anything requiring the user’s PC to stay on
+
+4. SECURITY REQUIREMENTS (VERY IMPORTANT)
+4.1 Secrets Handling (MANDATORY)
+
+The following MUST NOT be inside the repository:
+
+Website URLs
+
+Login email
+
+Login password
+
+Telegram Bot Token
+
+Telegram Chat ID
+
+Target phrase
+
+All of these must be stored as:
+
+GitHub Repository → Settings → Secrets → Actions
+
+
+You MUST:
+
+Read them via environment variables
+
+Mask them in logs
+
+Never print them
+
+5. LOGIN BEHAVIOR REQUIREMENTS
+
+The app MUST:
+
+Attempt to open:
+
+https://example.invalid/modeling-requests
+
+
+If redirected to login:
+
+https://example.invalid/users/login
+
+
+→ Perform login automatically
+
+After login:
+
+Navigate back to /modeling-requests
+
+Wait until page is fully loaded
+
+Session Handling
+
+If cookies/session exist → reuse them
+
+If session expired → login again
+
+If session storage is not possible across runs → re-login every run (acceptable)
+
+⚠️ The AI must decide the best approach automatically.
+
+6. CHECKING LOGIC (EXACT)
+
+After the page loads:
+
+Extract page content
+
+Search for the exact string:
+
+Looks like all tasks were picked up before you
+
+Behavior:
+Condition	Action
+Phrase found	Exit silently
+Phrase NOT found	Send Telegram alert
+7. TELEGRAM NOTIFICATION REQUIREMENTS
+
+If phrase is NOT found, send a Telegram message containing:
+
+Clear alert message
+
+Timestamp (UTC)
+
+Website name
+
+Example message:
+
+🚨 CGTrader Alert
+The phrase was NOT found on the modeling requests page.
+Time: 2025-01-01 14:05 UTC
+
+
+Telegram must be used because:
+
+Free
+
+Reliable
+
+Instant
+
+8. GITHUB ACTIONS REQUIREMENTS
+8.1 Schedule
+
+You MUST configure GitHub Actions with:
+
+*/5 * * * *
+
+
+This runs every 5 minutes (UTC).
+
+8.2 Runner
+
+Use ubuntu-latest
+
+Linux runner only (cheapest / fastest)
+
+8.3 Failure Handling
+
+If the script crashes → send Telegram error alert
+
+If login fails → send Telegram error alert
+
+If page structure changes → send Telegram alert
+
+9. FILE STRUCTURE (MANDATORY)
+
+You MUST create the following structure:
+
+repo-root/
+│
+├── checker/
+│   ├── index.js
+│   ├── package.json
+│
+├── .github/
+│   └── workflows/
+│       └── checker.yml
+│
+└── README.md
+
+10. README REQUIREMENTS (FOR NON-TECHNICAL USER)
+
+The README MUST include:
+
+What this app does (simple English)
+
+How to set it up (step-by-step, copy-paste)
+
+How to add secrets
+
+How to test manually
+
+How alerts work
+
+What to do if login breaks
+
+No jargon. Assume zero technical background.
+
+11. WHAT YOU ARE ALLOWED TO ASK THE USER
+
+You MAY ask the user ONLY for:
+
+Email address for login
+
+Password for login
+
+Telegram Bot Token
+
+Telegram Chat ID
+
+You must explain exactly how to obtain them, step by step.
+
+❌ Do NOT ask:
+
+Which framework to use
+
+Which architecture to choose
+
+Whether to use cookies or not
+
+Any programming decisions
+
+12. RELIABILITY & ROBUSTNESS
+
+You MUST:
+
+Wait for page to fully load
+
+Handle slow connections
+
+Retry navigation if needed
+
+Avoid false negatives
+
+Avoid duplicate Telegram messages in the same run
+
+13. FINAL ACCEPTANCE CRITERIA
+
+The task is complete only when:
+
+✅ Repo is public
+✅ No secrets are visible in code
+✅ GitHub Actions runs every 5 minutes
+✅ Login works automatically
+✅ Phrase detection works correctly
+✅ Telegram alerts arrive instantly
+✅ User never touches code
+
+14. IMPORTANT FINAL NOTE TO AI
+
+You are expected to:
+
+Make reasonable assumptions
+
+Choose best-practice defaults
+
+Handle edge cases proactively
+
+Act like a senior engineer
+
+If something is impossible, explain it clearly and propose the closest possible solution without asking the user to design it.Automated Website Monitor with Login + Telegram Alerts (GitHub Actions)
+1. ROLE & RESPONSIBILITY OF THE AI AGENT
+
+You are an autonomous software engineer AI agent.
+
+Your job is to:
+
+Design
+
+Implement
+
+Configure
+
+Document
+
+Deploy
+
+A fully working automation app based on the requirements below.
+
+⚠️ IMPORTANT CONSTRAINTS
+
+The user is not technical
+
+Do NOT ask the user to make architectural or technical decisions
+
+Only ask the user for:
+
+Login email
+
+Login password
+
+Telegram Bot Token
+
+Telegram Chat ID
+
+Everything else must be handled by you
+
+The user should only need to copy-paste values, not code
+
+2. GOAL OF THE APP (PLAIN ENGLISH)
+
+Create an app that:
+
+Runs automatically every 5 minutes
+
+Opens the website
+👉 https://example.invalid/modeling-requests
+
+If redirected, logs in at
+👉 https://example.invalid/users/login
+
+Maintains login if possible
+
+Re-logs in only if session expired
+
+Once the page loads, checks for this exact phrase:
+
+Looks like all tasks were picked up before you
+
+
+If the phrase IS FOUND
+
+Do nothing
+
+If the phrase IS NOT FOUND
+
+Send a Telegram message immediately
+
+Runs entirely in the cloud
+
+The user’s PC must NOT stay on
+
+Uses ONLY free services
+
+Uses a public GitHub repository
+
+Keeps email, password, URLs, and tokens secret
+
+NO secrets inside code
+
+NO secrets committed to GitHub
+
+3. REQUIRED TECHNOLOGY (MANDATORY)
+
+You MUST use:
+
+GitHub (Public Repository)
+
+GitHub Actions (cron every 5 minutes)
+
+Node.js
+
+Playwright (headless browser automation)
+
+Telegram Bot API
+
+❌ Do NOT use:
+
+Paid services
+
+External schedulers
+
+Cloud VMs
+
+Docker (unless absolutely required)
+
+Anything requiring the user’s PC to stay on
+
+4. SECURITY REQUIREMENTS (VERY IMPORTANT)
+4.1 Secrets Handling (MANDATORY)
+
+The following MUST NOT be inside the repository:
+
+Website URLs
+
+Login email
+
+Login password
+
+Telegram Bot Token
+
+Telegram Chat ID
+
+Target phrase
+
+All of these must be stored as:
+
+GitHub Repository → Settings → Secrets → Actions
+
+
+You MUST:
+
+Read them via environment variables
+
+Mask them in logs
+
+Never print them
+
+5. LOGIN BEHAVIOR REQUIREMENTS
+
+The app MUST:
+
+Attempt to open:
+
+https://example.invalid/modeling-requests
+
+
+If redirected to login:
+
+https://example.invalid/users/login
+
+
+→ Perform login automatically
+
+After login:
+
+Navigate back to /modeling-requests
+
+Wait until page is fully loaded
+
+Session Handling
+
+If cookies/session exist → reuse them
+
+If session expired → login again
+
+If session storage is not possible across runs → re-login every run (acceptable)
+
+⚠️ The AI must decide the best approach automatically.
+
+6. CHECKING LOGIC (EXACT)
+
+After the page loads:
+
+Extract page content
+
+Search for the exact string:
+
+Looks like all tasks were picked up before you
+
+Behavior:
+Condition	Action
+Phrase found	Exit silently
+Phrase NOT found	Send Telegram alert
+7. TELEGRAM NOTIFICATION REQUIREMENTS
+
+If phrase is NOT found, send a Telegram message containing:
+
+Clear alert message
+
+Timestamp (UTC)
+
+Website name
+
+Example message:
+
+🚨 CGTrader Alert
+The phrase was NOT found on the modeling requests page.
+Time: 2025-01-01 14:05 UTC
+
+
+Telegram must be used because:
+
+Free
+
+Reliable
+
+Instant
+
+8. GITHUB ACTIONS REQUIREMENTS
+8.1 Schedule
+
+You MUST configure GitHub Actions with:
+
+*/5 * * * *
+
+
+This runs every 5 minutes (UTC).
+
+8.2 Runner
+
+Use ubuntu-latest
+
+Linux runner only (cheapest / fastest)
+
+8.3 Failure Handling
+
+If the script crashes → send Telegram error alert
+
+If login fails → send Telegram error alert
+
+If page structure changes → send Telegram alert
+
+9. FILE STRUCTURE (MANDATORY)
+
+You MUST create the following structure:
+
+repo-root/
+│
+├── checker/
+│   ├── index.js
+│   ├── package.json
+│
+├── .github/
+│   └── workflows/
+│       └── checker.yml
+│
+└── README.md
+
+10. README REQUIREMENTS (FOR NON-TECHNICAL USER)
+
+The README MUST include:
+
+What this app does (simple English)
+
+How to set it up (step-by-step, copy-paste)
+
+How to add secrets
+
+How to test manually
+
+How alerts work
+
+What to do if login breaks
+
+No jargon. Assume zero technical background.
+
+11. WHAT YOU ARE ALLOWED TO ASK THE USER
+
+You MAY ask the user ONLY for:
+
+Email address for login
+
+Password for login
+
+Telegram Bot Token
+
+Telegram Chat ID
+
+You must explain exactly how to obtain them, step by step.
+
+❌ Do NOT ask:
+
+Which framework to use
+
+Which architecture to choose
+
+Whether to use cookies or not
+
+Any programming decisions
+
+12. RELIABILITY & ROBUSTNESS
+
+You MUST:
+
+Wait for page to fully load
+
+Handle slow connections
+
+Retry navigation if needed
+
+Avoid false negatives
+
+Avoid duplicate Telegram messages in the same run
+
+13. FINAL ACCEPTANCE CRITERIA
+
+The task is complete only when:
+
+✅ Repo is public
+✅ No secrets are visible in code
+✅ GitHub Actions runs every 5 minutes
+✅ Login works automatically
+✅ Phrase detection works correctly
+✅ Telegram alerts arrive instantly
+✅ User never touches code
+
+14. IMPORTANT FINAL NOTE TO AI
+
+You are expected to:
+
+Make reasonable assumptions
+
+Choose best-practice defaults
+
+Handle edge cases proactively
+
+Act like a senior engineer
+
+If something is impossible, explain it clearly and propose the closest possible solution without asking the user to design it.

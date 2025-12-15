@@ -1,0 +1,46 @@
+name: redacted Website Checker
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # Every 5 minutes
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-website:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '18'
+    
+    # Cache session to persist "Remember Me"
+    - name: Cache Browser Session
+      uses: actions/cache@v3
+      with:
+        path: checker/session.json
+        # Generate a new key every time to force a save
+        key: session-${{ github.run_id }}
+        restore-keys: |
+          session-
+
+    - name: Install dependencies
+      working-directory: ./checker
+      run: npm ci
+
+    - name: Install Playwright Browsers
+      working-directory: ./checker
+      run: npx playwright install chromium --with-deps
+
+    - name: Run Checker Script
+      working-directory: ./checker
+      env:
+        CG_EMAIL: ${{ secrets.CG_EMAIL }}
+        CG_PASSWORD: ${{ secrets.CG_PASSWORD }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: node index.js
