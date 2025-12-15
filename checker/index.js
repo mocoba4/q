@@ -4,8 +4,8 @@ require('dotenv').config();
 
 // Configuration
 const CONFIG = {
-    url: 'https://example.invalid/modeling-requests',
-    loginUrl: 'https://example.invalid/users/login',
+    url: process.env.TARGET_URL,
+    loginUrl: process.env.LOGIN_URL,
     targetPhrase: 'Looks like all tasks were picked up before you',
     email: process.env.CG_EMAIL,
     password: process.env.CG_PASSWORD,
@@ -41,8 +41,8 @@ async function run() {
     console.log('Starting redacted Checker...');
 
     // Validation
-    if (!CONFIG.email || !CONFIG.password) {
-        console.error('Missing credentials (CG_EMAIL / CG_PASSWORD)');
+    if (!CONFIG.email || !CONFIG.password || !CONFIG.url || !CONFIG.loginUrl) {
+        console.error('Missing configuration. Check CG_EMAIL, CG_PASSWORD, TARGET_URL, LOGIN_URL.');
         process.exit(1);
     }
 

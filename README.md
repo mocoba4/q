@@ -12,11 +12,22 @@ You need to create a bot to receive messages.
 4. Give it a unique username (e.g., `redactedAlert123_bot`).
 5. **Copy the API Token** it gives you (it looks like `123456:ABC-DEF...`). Save this for later.
 
-### Step 2: Get Your Chat ID
-1. Search for your new bot on Telegram and click **Start**.
-2. Search for another bot called **@userinfobot**.
-3. Click **Start**. It will show your "Id".
-4. **Copy this number**. This is your `Chat ID`.
+### Step 2: Get Your Chat ID (For User OR Group)
+
+**Option A: Send to just YOU**
+1. Search for **@userinfobot**.
+2. Click **Start**.
+3. It will show your "Id". Copy this number.
+
+**Option B: Send to a GROUP / CHANNEL**
+1. Create a Telegram Group.
+2. **Add your new bot** to the group as a member.
+3. Open this link in your browser (replace `<YOUR_TOKEN>` with the token from Step 1):
+   `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
+4. Send a message (e.g., "Hello") in the group.
+5. Refresh the browser page.
+6. Look for data that looks like `"chat":{"id":-100123456789...`.
+7. **Copy that number** (including the minus sign `-`). That is your Group Chat ID.
 
 ### Step 3: Put this Code on GitHub
 1. Create a **New Repository** on GitHub (Make it **Public**).
@@ -68,6 +79,18 @@ For the bot to work, you need to give it your login info and Telegram keys secur
 
 **Secret** (Paste your Chat ID):
 `123456789`
+
+---
+
+### Secret #5
+**Name**: `TARGET_URL`
+**Secret**: `https://example.invalid/modeling-requests`
+
+---
+
+### Secret #6
+**Name**: `LOGIN_URL`
+**Secret**: `https://example.invalid/users/login`
 
 ---
 
