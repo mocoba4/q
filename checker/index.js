@@ -12,7 +12,6 @@ const CONFIG = {
     telegramToken: process.env.TELEGRAM_BOT_TOKEN,
     telegramChatId: process.env.TELEGRAM_CHAT_ID,
     ntfyTopic: process.env.NTFY_TOPIC,
-    // We now control interval inside the loop
 };
 
 async function sendTelegramAlert(message) {
@@ -68,7 +67,7 @@ const path = require('path');
 const SESSION_FILE = path.join(__dirname, 'session.json');
 
 async function run() {
-    console.log('Starting Website Checker (High Frequency Mode)...');
+    console.log('Starting Website Checker...');
 
     // Validation
     if (!CONFIG.email || !CONFIG.password || !CONFIG.url || !CONFIG.loginUrl) {
@@ -87,109 +86,82 @@ async function run() {
 
     const browser = await chromium.launch({
         headless: !showBrowser,
-        slowMo: showBrowser ? 500 : 0
+        slowMo: showBrowser ? 1000 : 0
     });
     const context = await browser.newContext(contextOptions);
     const page = await context.newPage();
 
-    // ---------------------------------------------------------
-    // LOOP CONFIGURATION
-    // Run for ~4.5 minutes to cover the 5-minute Cron gap.
-    // Check every 45-60 seconds.
-    // ---------------------------------------------------------
-    const LOOP_DURATION = 4.5 * 60 * 1000; // 270 seconds
-    const CHECK_INTERVAL = 45 * 1000;      // 45 seconds
-    const startTime = Date.now();
-
-    let iterations = 0;
-
     try {
-        while (Date.now() - startTime < LOOP_DURATION) {
-            iterations++;
-            const timeRemaining = Math.round((LOOP_DURATION - (Date.now() - startTime)) / 1000);
-            console.log(`\n🔄 Iteration #${iterations} (Time remaining: ${timeRemaining}s)`);
+        console.log(`Navigating to ${CONFIG.url}...`);
+        await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
 
+        // Check if we were redirected to login
+        if (page.url().includes('/users/login')) {
+            console.log('Redirected to login page. Logging in...');
+
+            const emailInput = page.locator('input[type="email"], input[name*="email"]');
+            const passwordInput = page.locator('input[type="password"]');
+
+            if (await emailInput.count() > 0) {
+                await emailInput.fill(CONFIG.email);
+            }
+            if (await passwordInput.count() > 0) {
+                await passwordInput.fill(CONFIG.password);
+            }
+
+            // Try to tick "Remember me"
             try {
-                console.log(`Navigating to ${CONFIG.url}...`);
-                await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
-
-                // Check if we were redirected to login
-                if (page.url().includes('/users/login')) {
-                    console.log('Redirected to login page. Logging in...');
-
-                    const emailInput = page.locator('input[type="email"], input[name*="email"]');
-                    const passwordInput = page.locator('input[type="password"]');
-
-                    if (await emailInput.count() > 0) {
-                        await emailInput.fill(CONFIG.email);
+                const rememberMe = page.getByLabel('Remember me').or(page.getByText('Remember me'));
+                if (await rememberMe.count() > 0) {
+                    const checkbox = page.locator('input[type="checkbox"]');
+                    if (await checkbox.count() > 0) {
+                        await checkbox.first().check();
+                    } else {
+                        await rememberMe.first().click();
                     }
-                    if (await passwordInput.count() > 0) {
-                        await passwordInput.fill(CONFIG.password);
-                    }
-
-                    // Try to tick "Remember me"
-                    try {
-                        const rememberMe = page.getByLabel('Remember me').or(page.getByText('Remember me'));
-                        if (await rememberMe.count() > 0) {
-                            const checkbox = page.locator('input[type="checkbox"]');
-                            if (await checkbox.count() > 0) {
-                                await checkbox.first().check();
-                            } else {
-                                await rememberMe.first().click();
-                            }
-                        } else {
-                            const anyCheckbox = page.locator('input[type="checkbox"]').first();
-                            if (await anyCheckbox.count() > 0) {
-                                await anyCheckbox.check();
-                            }
-                        }
-                    } catch (e) { /* ignore */ }
-
-                    const submitButton = page.locator('button[type="submit"], input[type="submit"]');
-
-                    await Promise.all([
-                        page.waitForURL('**/modeling-requests'),
-                        submitButton.click()
-                    ]);
-
-                    console.log('Login submitted. Redirection complete.');
-                    await page.waitForLoadState('networkidle');
-
-                    console.log('Saving session state...');
-                    await context.storageState({ path: SESSION_FILE });
-                }
-
-                // Verify page
-                if (!page.url().includes('modeling-requests')) {
-                    console.warn(`Warning: Might not be on target page. URL: ${page.url()}`);
-                }
-
-                console.log('Checking for target phrase...');
-                const content = await page.content();
-
-                if (content.includes(CONFIG.targetPhrase)) {
-                    console.log('✅ Phrase FOUND: No work available.');
                 } else {
-                    console.log('❌ phrase NOT FOUND! Tasks might be available.');
-                    const telegramMsg = `🚨 Task Alert\nThe phrase was NOT found!\nTasks might be available!\nTime: ${new Date().toUTCString()}`;
-                    const ntfyMsg = `Tasks might be available! (Phrase not found)`;
-
-                    await sendDualAlert(telegramMsg, ntfyMsg);
+                    const anyCheckbox = page.locator('input[type="checkbox"]').first();
+                    if (await anyCheckbox.count() > 0) {
+                        await anyCheckbox.check();
+                    }
                 }
+            } catch (e) { /* ignore */ }
 
-            } catch (innerError) {
-                console.error(`⚠️ Error in loop iteration: ${innerError.message}`);
-                // Continue loop logic despite errors
-            }
+            const submitButton = page.locator('button[type="submit"], input[type="submit"]');
 
-            // Wait before next check
-            if (Date.now() - startTime < LOOP_DURATION) {
-                console.log(`Waiting ${CHECK_INTERVAL / 1000}s...`);
-                await page.waitForTimeout(CHECK_INTERVAL);
-            }
+            await Promise.all([
+                page.waitForURL('**/modeling-requests'),
+                submitButton.click()
+            ]);
+
+            console.log('Login submitted. Redirection complete.');
+            await page.waitForLoadState('networkidle');
+
+            console.log('Saving session state...');
+            await context.storageState({ path: SESSION_FILE });
+        } else {
+            // Refresh session file to keep it alive
+            console.log('Already logged in!');
+            await context.storageState({ path: SESSION_FILE });
         }
 
-        console.log('--- Loop finished (Time Check Completed) ---');
+        // Verify page
+        if (!page.url().includes('modeling-requests')) {
+            console.warn(`Warning: Might not be on target page. URL: ${page.url()}`);
+        }
+
+        console.log('Checking for target phrase...');
+        const content = await page.content();
+
+        if (content.includes(CONFIG.targetPhrase)) {
+            console.log('✅ Phrase FOUND: No work available.');
+        } else {
+            console.log('❌ phrase NOT FOUND! Tasks might be available.');
+            const telegramMsg = `🚨 Task Alert\nThe phrase was NOT found!\nTasks might be available!\nTime: ${new Date().toUTCString()}`;
+            const ntfyMsg = `Tasks might be available! (Phrase not found)`;
+
+            await sendDualAlert(telegramMsg, ntfyMsg);
+        }
 
     } catch (error) {
         console.error('Fatal error in runner:', error);
