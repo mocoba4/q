@@ -38,7 +38,7 @@ const path = require('path');
 const SESSION_FILE = path.join(__dirname, 'session.json');
 
 async function run() {
-    console.log('Starting redacted Checker...');
+    console.log('Starting Website Checker...');
 
     // Validation
     if (!CONFIG.email || !CONFIG.password || !CONFIG.url || !CONFIG.loginUrl) {

@@ -1,7 +1,7 @@
 {
-  "name": "redacted-checker",
+  "name": "website-checker",
   "version": "1.0.0",
-  "description": "Automated checker for redacted modeling tasks",
+  "description": "Automated website checker",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"

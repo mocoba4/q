@@ -1,3 +1,5 @@
 node_modules/
 .env
 .DS_Store
+checker/session.json
+Instruction file.txt

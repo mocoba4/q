@@ -1,4 +1,4 @@
-name: redacted Website Checker
+name: Website Checker
 
 on:
   schedule:

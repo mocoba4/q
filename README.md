@@ -1,6 +1,6 @@
-# redacted Website Monitor 🐱
+# Website Monitor 🐱
 
-This is an automated tool that checks the redacted website every 5 minutes. If it finds that "work is available" (meaning the "all tasks picked up" message is gone), it sends you a message on Telegram instantly.
+This is an automated tool that checks the website every 5 minutes. If it finds that "work is available" (meaning the "all tasks picked up" message is gone), it sends you a message on Telegram instantly.
 
 ## 🚀 How to Set This Up
 
@@ -8,8 +8,8 @@ This is an automated tool that checks the redacted website every 5 minutes. If i
 You need to create a bot to receive messages.
 1. Open Telegram and search for **@BotFather**.
 2. Click **Start** and type `/newbot`.
-3. Give it a name (e.g., "redacted Alert").
-4. Give it a unique username (e.g., `redactedAlert123_bot`).
+3. Give it a name (e.g., "Task Alert").
+4. Give it a unique username (e.g., `TaskAlert123_bot`).
 5. **Copy the API Token** it gives you (it looks like `123456:ABC-DEF...`). Save this for later.
 
 ### Step 2: Get Your Chat ID (For User OR Group)
@@ -84,13 +84,15 @@ For the bot to work, you need to give it your login info and Telegram keys secur
 
 ### Secret #5
 **Name**: `TARGET_URL`
-**Secret**: `https://example.invalid/modeling-requests`
+**Secret**: `https://example.com/tasks`
+*(Replace with the actual tasks URL)*
 
 ---
 
 ### Secret #6
 **Name**: `LOGIN_URL`
-**Secret**: `https://example.invalid/users/login`
+**Secret**: `https://example.com/login`
+*(Replace with the actual login URL)*
 
 ---
 
@@ -112,10 +114,10 @@ You should see it open a browser (in the background) and print what it is doing.
 ## ❓ Troubleshooting
 
 **Q: I'm not getting alerts!**
-A: This usually means there are no tasks (the specific "not found" phrase is present). Check the "Actions" tab in GitHub to see if the "redacted Website Checker" workflow is running green.
+A: This usually means there are no tasks (the specific "not found" phrase is present). Check the "Actions" tab in GitHub to see if the "Website Checker" workflow is running green.
 
 **Q: The login isn't working.**
 A: Double-check your `CG_EMAIL` and `CG_PASSWORD` in the Secrets settings. Ensure they are correct and have no extra spaces.
 
 **Q: I want to stop it.**
-A: Go to the "Actions" tab, click "redacted Website Checker" on the left, check the three dots `...` and select "Disable workflow".
+A: Go to the "Actions" tab, click "Website Checker" on the left, check the three dots `...` and select "Disable workflow".
