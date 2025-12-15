@@ -11,6 +11,7 @@ const CONFIG = {
     password: process.env.CG_PASSWORD,
     telegramToken: process.env.TELEGRAM_BOT_TOKEN,
     telegramChatId: process.env.TELEGRAM_CHAT_ID,
+    ntfyTopic: process.env.NTFY_TOPIC,
     checkInterval: 5 * 60 * 1000 // 5 minutes (handled by GitHub Actions largely)
 };
 
@@ -30,6 +31,35 @@ async function sendTelegramAlert(message) {
     } catch (error) {
         console.error('Failed to send Telegram alert:', error.message);
     }
+}
+
+async function sendNtfyAlert(message) {
+    if (!CONFIG.ntfyTopic) {
+        console.log('No NTFY_TOPIC configured, skipping push notification.');
+        return;
+    }
+
+    const url = `https://ntfy.sh/${CONFIG.ntfyTopic}`;
+    try {
+        await axios.post(url, message, {
+            headers: {
+                'Title': 'Website Checker Alert',
+                'Priority': '5',
+                'Tags': 'warning,rocket'
+            }
+        });
+        console.log('ntfy push notification sent.');
+    } catch (error) {
+        console.error('Failed to send ntfy alert:', error.message);
+    }
+}
+
+async function sendDualAlert(telegramMsg, ntfyMsg) {
+    // Send both independently
+    await Promise.allSettled([
+        sendTelegramAlert(telegramMsg),
+        sendNtfyAlert(ntfyMsg || telegramMsg) // Use same msg if ntfy specific not provided
+    ]);
 }
 
 const fs = require('fs');
@@ -155,13 +185,14 @@ async function run() {
             console.log('Phrase FOUND: "Looks like all tasks were picked up before you". No actions needed.');
         } else {
             console.log('phrase NOT FOUND! Tasks might be available.');
-            const msg = `🚨 CGTrader Alert\nThe phrase was NOT found on the modeling requests page.\nTasks might be available!\nTime: ${new Date().toUTCString()}`;
-            await sendTelegramAlert(msg);
+            const telegramMsg = `🚨 Task Alert\nThe phrase was NOT found on the requests page.\nTasks might be available!\nTime: ${new Date().toUTCString()}`;
+            const ntfyMsg = `Tasks might be available! (Phrase not found)`;
+            await sendDualAlert(telegramMsg, ntfyMsg);
         }
 
     } catch (error) {
         console.error('An error occurred:', error);
-        await sendTelegramAlert(`⚠️ Checker Error: ${error.message}`);
+        await sendDualAlert(`⚠️ Checker Error: ${error.message}`);
         process.exit(1);
     } finally {
         await browser.close();

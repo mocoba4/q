@@ -29,7 +29,24 @@ You need to create a bot to receive messages.
 6. Look for data that looks like `"chat":{"id":-100123456789...`.
 7. **Copy that number** (including the minus sign `-`). That is your Group Chat ID.
 
-### Step 3: Put this Code on GitHub
+### Step 3: Get Free Phone Alerts (Optional but Recommended) 📱
+This app can also send push notifications to your phone using **ntfy.sh** (free, no account needed).
+
+1.  **Download the "ntfy" app** on your phone (Android or iOS).
+2.  **Make up a secret topic name**. It should be random so others don't guess it.
+    *   Example: `redacted-alert-8f39x` (Don't use this one, make your own!)
+3.  **Open the app** and subscribe to your topic.
+    *   Tap the `+` button.
+    *   Enter your topic name (e.g., `redacted-alert-8f39x`).
+    *   Tap **Subscribe**.
+4.  **Test it**:
+    *   Go to `https://ntfy.sh/YOUR_TOPIC_NAME` in your browser.
+    *   Click "Send". You should get a notification on your phone immediately.
+5.  **Copy your Topic Name** (just the name, not the URL). You will need this for the "Secrets" step.
+
+---
+
+### Step 4: Put this Code on GitHub
 1. Create a **New Repository** on GitHub (Make it **Public**).
 2. Upload all the files in this folder to that repository.
 3. (Or if you know how to use Git, push this code to the new repo).
@@ -93,6 +110,13 @@ For the bot to work, you need to give it your login info and Telegram keys secur
 **Name**: `LOGIN_URL`
 **Secret**: `https://example.com/login`
 *(Replace with the actual login URL)*
+
+---
+
+### Secret #7
+**Name**: `NTFY_TOPIC`
+**Secret**: `redacted-alert-8f39x`
+*(Paste the random topic name you created in Step 3)*
 
 ---
 
