@@ -1,0 +1,258 @@
+📄 INSTRUCTION FILE — Add Free Phone Push Notifications (ntfy)
+While Keeping Telegram Alerts (Dual Alerts)
+1. CONTEXT FOR THE AI AGENT
+
+You have already built a working application with these characteristics:
+
+Public GitHub repository
+
+GitHub Actions running every 5 minutes
+
+Playwright-based browser automation
+
+Automatic login handling
+
+Phrase detection logic
+
+Telegram alerts on failure
+
+All secrets stored in GitHub Actions secrets
+
+User is non-technical
+
+Your task now is to ADD free phone push notifications using ntfy, without removing or breaking Telegram.
+
+2. GOAL OF THIS CHANGE (PLAIN ENGLISH)
+
+When the phrase is NOT found:
+
+✅ Send Telegram message (existing behavior)
+
+✅ Send ntfy push notification to the user’s phone
+
+When the phrase IS found:
+
+❌ Do nothing (same as before)
+
+Everything else in the app must remain unchanged.
+
+3. TECHNOLOGY REQUIREMENT (MANDATORY)
+
+You MUST use:
+
+ntfy.sh (public instance)
+
+No user accounts
+
+No phone numbers
+
+No paid services
+
+HTTP-based push
+
+GitHub Actions compatible
+
+Do NOT remove Telegram.
+Do NOT replace Telegram.
+Do NOT make ntfy optional.
+
+4. SECURITY REQUIREMENTS (VERY IMPORTANT)
+4.1 Secrets Handling
+
+The following MUST be stored as GitHub Actions secrets:
+
+NTFY_TOPIC
+
+❌ Do NOT hardcode the topic
+❌ Do NOT commit it to the repository
+❌ Do NOT log it in plaintext
+
+The topic is considered a secret.
+
+5. USER SETUP (WHAT YOU MAY ASK THE USER)
+
+You are allowed to ask the user ONLY for:
+
+1️⃣ ntfy Topic Name
+
+You MUST explain to the user how to get it:
+
+Install ntfy app on phone (Android or iOS)
+
+Subscribe to a random topic name, e.g.:
+
+cgtrader-alert-8f39xk2p9a
+
+
+Confirm they receive test notification
+
+Paste only the topic name (not the URL)
+
+⚠️ The user must NOT be asked for any technical info.
+
+6. HOW NTFY WORKS (FOR IMPLEMENTATION)
+6.1 Push Endpoint
+
+Send an HTTP POST request to:
+
+https://ntfy.sh/<TOPIC_NAME>
+
+6.2 Message Format
+
+The message body should be plain text.
+
+6.3 Headers (Recommended)
+
+Use:
+
+Title
+
+Priority
+
+Tags
+
+Example headers:
+
+Title: CGTrader Alert
+Priority: 5
+Tags: warning,rocket
+
+7. WHEN TO SEND NTFY NOTIFICATION
+
+You MUST send ntfy notification in ALL cases where Telegram is sent:
+
+Phrase NOT found
+
+Login failure
+
+Page load failure
+
+Unexpected error / exception
+
+If Telegram send fails, ntfy must still be attempted.
+
+8. CODE CHANGES REQUIRED
+8.1 Create a new notification function
+
+Add a function similar to Telegram sender:
+
+sendNtfyNotification(message)
+
+This function:
+
+Reads NTFY_TOPIC from environment variables
+
+Sends POST request to https://ntfy.sh/<topic>
+
+Uses proper headers
+
+Has error handling
+
+Never throws uncaught errors
+
+8.2 Dual Notification Logic (MANDATORY)
+
+Whenever an alert is triggered:
+
+Send Telegram notification
+
+Send ntfy notification
+
+Log success/failure silently
+
+They must be independent of each other.
+
+9. GITHUB ACTIONS UPDATE
+9.1 Add Secret to Workflow
+
+Ensure the workflow passes:
+
+NTFY_TOPIC
+
+
+as an environment variable to the script.
+
+10. README UPDATE REQUIREMENTS
+
+Update README with a new section:
+
+“📱 Phone Push Notifications (ntfy)”
+
+Include:
+
+What ntfy is (simple explanation)
+
+How to install the app
+
+How to create a topic
+
+Where to add it in GitHub Secrets
+
+What happens when an alert is sent
+
+Assume the reader has zero technical background.
+
+11. FAILURE & EDGE CASE HANDLING
+
+You MUST handle:
+
+ntfy service unreachable
+
+Invalid topic
+
+Network timeout
+
+Telegram success but ntfy failure
+
+ntfy success but Telegram failure
+
+The script must:
+
+Never crash because of notification failure
+
+Never stop future scheduled runs
+
+12. TESTING REQUIREMENTS
+
+You MUST test:
+
+Phrase found → no alerts
+
+Phrase NOT found → Telegram + ntfy
+
+Invalid credentials → Telegram + ntfy
+
+Temporary network failure → Telegram + ntfy (when possible)
+
+13. FINAL ACCEPTANCE CRITERIA
+
+This task is complete only when:
+
+✅ Telegram alerts still work
+✅ ntfy alerts arrive on phone
+✅ No secrets are committed
+✅ Repo remains public
+✅ GitHub Actions runs every 5 minutes
+✅ User does not touch code
+
+14. IMPORTANT FINAL NOTE TO AI
+
+You must:
+
+Make all technical decisions
+
+Minimize user interaction
+
+Keep code clean and readable
+
+Use best practices
+
+Assume future maintainability
+
+If anything is unclear:
+
+Make the safest assumption
+
+Document it in README
+
+🚀 END OF INSTRUCTION FILE
