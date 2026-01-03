@@ -17,9 +17,9 @@ call node index.js
 echo.
 echo "========================================="
 echo "   Check Finished."
-echo "   Waiting 5 minutes before next run..."
+echo "   Waiting 1 minute before next run..."
 echo "========================================="
 
-timeout /t 300 >nul
+timeout /t 60 >nul
 
 goto loop

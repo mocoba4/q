@@ -5,6 +5,14 @@ on:
     - cron: '*/5 * * * *' # Every 5 minutes
   workflow_dispatch: # Allow manual trigger
 
+
+# Concurrency ensures that when a new 5-minute job starts, 
+# it cancels the previous "long running" 6-hour job.
+# This creates a seamless "Always On" loop.
+concurrency: 
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
   check-website:
     runs-on: ubuntu-latest
