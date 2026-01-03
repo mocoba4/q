@@ -1,5 +1,6 @@
 const { chromium } = require('playwright');
 const axios = require('axios');
+const FormData = require('form-data');
 require('dotenv').config();
 
 // Configuration
@@ -14,25 +15,36 @@ const CONFIG = {
     ntfyTopic: process.env.NTFY_TOPIC,
 };
 
-async function sendTelegramAlert(message) {
+async function sendTelegramAlert(message, imageBuffer) {
     if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
         console.error('Missing Telegram configuration');
         return;
     }
 
-    const url = `https://api.telegram.org/bot${CONFIG.telegramToken}/sendMessage`;
     try {
-        await axios.post(url, {
-            chat_id: CONFIG.telegramChatId,
-            text: message
-        });
-        console.log('Telegram alert sent.');
+        if (imageBuffer) {
+            const form = new FormData();
+            form.append('chat_id', CONFIG.telegramChatId);
+            form.append('caption', message);
+            form.append('photo', imageBuffer, 'screenshot.png');
+
+            await axios.post(`https://api.telegram.org/bot${CONFIG.telegramToken}/sendPhoto`, form, {
+                headers: form.getHeaders()
+            });
+            console.log('Telegram photo sent.');
+        } else {
+            await axios.post(`https://api.telegram.org/bot${CONFIG.telegramToken}/sendMessage`, {
+                chat_id: CONFIG.telegramChatId,
+                text: message
+            });
+            console.log('Telegram text sent.');
+        }
     } catch (error) {
         console.error('Failed to send Telegram alert:', error.message);
     }
 }
 
-async function sendNtfyAlert(message) {
+async function sendNtfyAlert(message, imageBuffer) {
     if (!CONFIG.ntfyTopic) {
         console.log('No NTFY_TOPIC configured, skipping push notification.');
         return;
@@ -40,24 +52,38 @@ async function sendNtfyAlert(message) {
 
     const url = `https://ntfy.sh/${CONFIG.ntfyTopic}`;
     try {
-        await axios.post(url, message, {
-            headers: {
-                'Title': 'Website Checker Alert',
-                'Priority': '5',
-                'Tags': 'warning,rocket'
-            }
-        });
-        console.log('ntfy push notification sent.');
+        if (imageBuffer) {
+            await axios.put(url, imageBuffer, {
+                headers: {
+                    'Title': 'Website Checker Alert',
+                    'Priority': '5',
+                    'Tags': 'warning,rocket',
+                    'Filename': 'screenshot.png',
+                    'Header': 'X-Message'
+                }
+            });
+            console.log('ntfy screenshot sent.');
+        } else {
+            await axios.post(url, message, {
+                headers: {
+                    'Title': 'Website Checker Alert',
+                    'Priority': '5',
+                    'Tags': 'warning,rocket'
+                }
+            });
+            console.log('ntfy text sent.');
+        }
+
     } catch (error) {
         console.error('Failed to send ntfy alert:', error.message);
     }
 }
 
-async function sendDualAlert(telegramMsg, ntfyMsg) {
+async function sendDualAlert(telegramMsg, ntfyMsg, imageBuffer) {
     // Send both independently
     await Promise.allSettled([
-        sendTelegramAlert(telegramMsg),
-        sendNtfyAlert(ntfyMsg || telegramMsg) // Use same msg if ntfy specific not provided
+        sendTelegramAlert(telegramMsg, imageBuffer),
+        sendNtfyAlert(ntfyMsg, imageBuffer)
     ]);
 }
 
@@ -157,10 +183,14 @@ async function run() {
             console.log('✅ Phrase FOUND: No work available.');
         } else {
             console.log('❌ phrase NOT FOUND! Tasks might be available.');
+
+            console.log('📸 Taking screenshot...');
+            const screenshotBuffer = await page.screenshot({ fullPage: true });
+
             const telegramMsg = `🚨 Task Alert\nThe phrase was NOT found!\nTasks might be available!\nTime: ${new Date().toUTCString()}`;
             const ntfyMsg = `Tasks might be available! (Phrase not found)`;
 
-            await sendDualAlert(telegramMsg, ntfyMsg);
+            await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
         }
 
     } catch (error) {
