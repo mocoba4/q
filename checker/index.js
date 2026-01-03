@@ -95,6 +95,14 @@ const SESSION_FILE = path.join(__dirname, 'session.json');
 async function run() {
     console.log('Starting Website Checker...');
 
+    // Determine Mode
+    const IS_CI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+    if (IS_CI) {
+        console.log('🚀 Mode: Cloud (CI) - Enabling 45s Polling Loop');
+    } else {
+        console.log('💻 Mode: Local - Single Run');
+    }
+
     // Validation
     if (!CONFIG.email || !CONFIG.password || !CONFIG.url || !CONFIG.loginUrl) {
         console.error('Missing configuration. Check CG_EMAIL, CG_PASSWORD, TARGET_URL, LOGIN_URL.');
@@ -117,80 +125,122 @@ async function run() {
     const context = await browser.newContext(contextOptions);
     const page = await context.newPage();
 
+    // Loop Configuration for CI
+    // Run for 6 hours (Max GitHub Action limit).
+    // Concurrency settings in YAML will ensure the old one is killed when the new one starts.
+    const LOOP_DURATION = 6 * 60 * 60 * 1000; // 6 hours
+    const CHECK_INTERVAL = 45 * 1000;      // 45 seconds
+    const startTime = Date.now();
+    let iterations = 0;
+
     try {
-        console.log(`Navigating to ${CONFIG.url}...`);
-        await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+        // We use a do-while loop structure or similar. 
+        // If Local: Run once (condition returns false immediately after first run).
+        // If Cloud: Run until time is up.
 
-        // Check if we were redirected to login
-        if (page.url().includes('/users/login')) {
-            console.log('Redirected to login page. Logging in...');
+        // However, we want to perform the logic properly.
+        // Let's use a explicit loop condition.
 
-            const emailInput = page.locator('input[type="email"], input[name*="email"]');
-            const passwordInput = page.locator('input[type="password"]');
+        let keepRunning = true;
 
-            if (await emailInput.count() > 0) {
-                await emailInput.fill(CONFIG.email);
+        while (keepRunning) {
+            iterations++;
+            if (IS_CI) {
+                const timeRemaining = Math.round((LOOP_DURATION - (Date.now() - startTime)) / 1000);
+                console.log(`\n🔄 Iteration #${iterations} (Time remaining: ${timeRemaining}s)`);
             }
-            if (await passwordInput.count() > 0) {
-                await passwordInput.fill(CONFIG.password);
-            }
 
-            // Try to tick "Remember me"
             try {
-                const rememberMe = page.getByLabel('Remember me').or(page.getByText('Remember me'));
-                if (await rememberMe.count() > 0) {
-                    const checkbox = page.locator('input[type="checkbox"]');
-                    if (await checkbox.count() > 0) {
-                        await checkbox.first().check();
-                    } else {
-                        await rememberMe.first().click();
+                console.log(`Navigating to ${CONFIG.url}...`);
+                await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+
+                // Check if we were redirected to login
+                if (page.url().includes('/users/login')) {
+                    console.log('Redirected to login page. Logging in...');
+
+                    const emailInput = page.locator('input[type="email"], input[name*="email"]');
+                    const passwordInput = page.locator('input[type="password"]');
+
+                    if (await emailInput.count() > 0) {
+                        await emailInput.fill(CONFIG.email);
                     }
-                } else {
-                    const anyCheckbox = page.locator('input[type="checkbox"]').first();
-                    if (await anyCheckbox.count() > 0) {
-                        await anyCheckbox.check();
+                    if (await passwordInput.count() > 0) {
+                        await passwordInput.fill(CONFIG.password);
                     }
+
+                    // Try to tick "Remember me"
+                    try {
+                        const rememberMe = page.getByLabel('Remember me').or(page.getByText('Remember me'));
+                        if (await rememberMe.count() > 0) {
+                            const checkbox = page.locator('input[type="checkbox"]');
+                            if (await checkbox.count() > 0) {
+                                await checkbox.first().check();
+                            } else {
+                                await rememberMe.first().click();
+                            }
+                        } else {
+                            const anyCheckbox = page.locator('input[type="checkbox"]').first();
+                            if (await anyCheckbox.count() > 0) {
+                                await anyCheckbox.check();
+                            }
+                        }
+                    } catch (e) { /* ignore */ }
+
+                    const submitButton = page.locator('button[type="submit"], input[type="submit"]');
+
+                    await Promise.all([
+                        page.waitForURL('**/modeling-requests'),
+                        submitButton.click()
+                    ]);
+
+                    console.log('Login submitted. Redirection complete.');
+                    await page.waitForLoadState('networkidle');
+
+                    console.log('Saving session state...');
+                    await context.storageState({ path: SESSION_FILE });
                 }
-            } catch (e) { /* ignore */ }
 
-            const submitButton = page.locator('button[type="submit"], input[type="submit"]');
+                // Verify page
+                if (!page.url().includes('modeling-requests')) {
+                    console.warn(`Warning: Might not be on target page. URL: ${page.url()}`);
+                }
 
-            await Promise.all([
-                page.waitForURL('**/modeling-requests'),
-                submitButton.click()
-            ]);
+                console.log('Checking for target phrase...');
+                const content = await page.content();
 
-            console.log('Login submitted. Redirection complete.');
-            await page.waitForLoadState('networkidle');
+                if (content.includes(CONFIG.targetPhrase)) {
+                    console.log('✅ Phrase FOUND: "Looks like all tasks were picked up before you".');
+                    console.log('No work available.');
+                } else {
+                    console.log('❌ phrase NOT FOUND! Tasks might be available.');
 
-            console.log('Saving session state...');
-            await context.storageState({ path: SESSION_FILE });
-        } else {
-            // Refresh session file to keep it alive
-            console.log('Already logged in!');
-            await context.storageState({ path: SESSION_FILE });
-        }
+                    console.log('📸 Taking screenshot...');
+                    const screenshotBuffer = await page.screenshot({ fullPage: true });
 
-        // Verify page
-        if (!page.url().includes('modeling-requests')) {
-            console.warn(`Warning: Might not be on target page. URL: ${page.url()}`);
-        }
+                    const telegramMsg = `🚨 Task Alert\nThe phrase was NOT found!\nTasks might be available!\nTime: ${new Date().toUTCString()}`;
+                    const ntfyMsg = `Tasks might be available! (Phrase not found)`;
 
-        console.log('Checking for target phrase...');
-        const content = await page.content();
+                    await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
+                }
 
-        if (content.includes(CONFIG.targetPhrase)) {
-            console.log('✅ Phrase FOUND: No work available.');
-        } else {
-            console.log('❌ phrase NOT FOUND! Tasks might be available.');
+            } catch (innerError) {
+                console.error(`⚠️ Error during check: ${innerError.message}`);
+                if (!IS_CI) throw innerError; // Fail fast on local
+            }
 
-            console.log('📸 Taking screenshot...');
-            const screenshotBuffer = await page.screenshot({ fullPage: true });
-
-            const telegramMsg = `🚨 Task Alert\nThe phrase was NOT found!\nTasks might be available!\nTime: ${new Date().toUTCString()}`;
-            const ntfyMsg = `Tasks might be available! (Phrase not found)`;
-
-            await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
+            // LOOP CONTROL
+            if (IS_CI) {
+                if (Date.now() - startTime < LOOP_DURATION) {
+                    console.log(`Waiting ${CHECK_INTERVAL / 1000}s...`);
+                    await page.waitForTimeout(CHECK_INTERVAL);
+                } else {
+                    console.log('--- Cloud Loop finished (Time Limit Reached) ---');
+                    keepRunning = false;
+                }
+            } else {
+                // Local mode: Run once and exit (Bat file handles the external loop)
+                keepRunning = false;
+            }
         }
 
     } catch (error) {
