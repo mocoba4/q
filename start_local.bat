@@ -11,6 +11,7 @@ echo "   Time: %TIME%"
 echo "========================================="
 echo.
 
+set SHOW_BROWSER=false
 call node index.js
 
 echo.
