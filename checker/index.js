@@ -280,153 +280,109 @@ async function run() {
 
                     // --- AUTO-ACCEPT LOGIC ---
 
-                    if (capacity.single.available === 0 && capacity.grouped.available === 0) {
-                        console.log('⚠️ Capacity FULL. Sending alert only.');
-                        // Fallback to normal alert if full
+                    if (CONFIG.checkOnly) {
+                        console.log('🛡️ Check Only Mode active. Sending Alert (No Actions Taken).');
                         const screenshotBuffer = await page.screenshot({ fullPage: true });
-                        await sendDualAlert(
-                            `🚨 Jobs Found but Capacity FULL!\nAccepted: ${capacity.single.current}/${capacity.single.max}\nGrouped: ${capacity.grouped.current}/${capacity.grouped.max}`,
-                            `Jobs found (Capacity Full)`,
-                            screenshotBuffer
-                        );
+                        const telegramMsg = `🚨 Task Alert (Check Only)\nTasks available, but Auto-Accept is DISABLED.\nTime: ${new Date().toUTCString()}`;
+                        const ntfyMsg = `Tasks available! (Auto-Accept Disabled)`;
+                        await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
                     } else {
-                        // C. Scrape Jobs
-                        console.log('Scraping Jobs...');
-                        // Assuming job cards have a price text like "$123.45"
-                        // We need a selector for job cards. Based on screenshot, maybe ".TaskCard..."?
-                        // Since we don't have exact card selector, we'll try to find elements with "$" prices.
-                        // But better: User said "Available modeling tasks".
-                        // We'll look for generic card containers. We'll assume any link that says "Open requirements" is a job.
+                        // A. Refresh First
+                        console.log('🔄 Refreshing page to get latest jobs...');
+                        await page.reload({ waitUntil: 'networkidle' });
 
-                        const jobButtons = await page.locator('a:has-text("Open requirements"), button:has-text("Open requirements")').all();
+                        // B. Check Capacity
+                        console.log('Checking Capacity...');
+                        const capacity = await getCapacity(page);
+                        console.log(`Limit: Single ${capacity.single.available} | Grouped ${capacity.grouped.available}`);
 
-                        let availableJobs = [];
-                        for (const btn of jobButtons) {
-                            // Scrape info from the card containing this button
-                            // We assume the card is a parent or ancestor
-                            // Playwright locator "evaluate" could be used here but let's be simpler.
-
-                            // We need the URL to open
-                            const url = await btn.getAttribute('href');
-                            if (!url) continue;
-
-                            // We need Price and "Variations" tag
-                            // We'll get text of the whole card/row
-                            // Locate parent row/card. 
-                            const card = btn.locator('xpath=./ancestor::div[contains(@class, "row") or contains(@class, "Card")]').first();
-                            // Fallback: Just look at text near the button if specific card selector is hard.
-                            // Actually, let's grab the card text.
-                            let cardText = '';
-                            if (await card.count() > 0) {
-                                cardText = await card.innerText();
-                            } else {
-                                // Fallback: parent of parent
-                                cardText = await btn.locator('..').locator('..').innerText();
-                            }
-
-                            // Parse Price
-                            const priceMatch = cardText.match(/\$(\d+(\.\d+)?)/);
-                            const price = priceMatch ? parseFloat(priceMatch[1]) : 0;
-
-                            // Parse Variations
-                            // "9 variations"
-                            const varMatch = cardText.match(/(\d+)\s+variations/i);
-                            const isGrouped = !!varMatch;
-                            const variationCount = isGrouped ? parseInt(varMatch[1], 10) : 1;
-
-                            const fullUrl = url.startsWith('http') ? url : new URL(url, CONFIG.url).toString();
-
-                            availableJobs.push({
-                                url: fullUrl,
-                                price: price,
-                                isGrouped: isGrouped,
-                                variations: variationCount,
-                                pricePerUnit: isGrouped ? (price / variationCount) : price
-                            });
-                        }
-
-                        console.log(`Found ${availableJobs.length} potential jobs.`);
-
-                        // D. Filter & Sort
-                        const singleJobs = availableJobs.filter(j => !j.isGrouped && j.price >= CONFIG.minPriceSingle)
-                            .sort((a, b) => b.price - a.price);
-
-                        const groupedJobs = availableJobs.filter(j => j.isGrouped && j.pricePerUnit >= CONFIG.minPriceVariation)
-                            .sort((a, b) => b.pricePerUnit - a.pricePerUnit); // Sort grouped by total price or unit price? User said "top paying". Assuming total price usually wins, but let's stick to user logic (implicitly prefer high value). Let's sort by PRICE actually. 
-                        // Correction: User said "evaluate each type on its own".
-                        // Let's sort by raw Price for both, as that's usually the goal (Highest $).
-
-                        singleJobs.sort((a, b) => b.price - a.price);
-                        groupedJobs.sort((a, b) => b.price - a.price);
-
-                        // E. Select Jobs (Greedy Partition)
-                        let jobsToProcess = [];
-
-                        // Single
-                        const neededSingle = capacity.single.available;
-                        const takeSingle = singleJobs.slice(0, neededSingle);
-                        jobsToProcess.push(...takeSingle);
-
-                        // Grouped
-                        const neededGrouped = capacity.grouped.available;
-                        const takeGrouped = groupedJobs.slice(0, neededGrouped);
-                        jobsToProcess.push(...takeGrouped);
-
-                        // Randomize if prices are equal? (Skipping for simplicity, Sort is stable enough)
-
-                        if (jobsToProcess.length > 0) {
-                            console.log(`Attempting to accept ${jobsToProcess.length} jobs (Concurrent Limit: ${CONFIG.maxConcurrentTabs})...`);
-
-                            // Batching for safety
-                            while (jobsToProcess.length > 0) {
-                                const batch = jobsToProcess.splice(0, CONFIG.maxConcurrentTabs);
-                                console.log(`Processing batch of ${batch.length}...`);
-
-                                // Parallel Execution
-                                const results = await Promise.all(batch.map(job =>
-                                    acceptJob(browser, job.url, contextOptions)
-                                ));
-
-                                const successCount = results.filter(r => r).length;
-                                if (successCount > 0) {
-                                    await sendDualAlert(`✅ Accepted ${successCount} new jobs!`);
-                                }
-                            }
-
-                            // Refresh capacity after taking
-                            // Loop will restart naturally
-                        } else {
-                            console.log('No jobs matched criteria (Min Price/Capacity). Sending Alert.');
+                        if (capacity.single.available === 0 && capacity.grouped.available === 0) {
+                            console.log('⚠️ Capacity FULL. Sending alert only.');
                             const screenshotBuffer = await page.screenshot({ fullPage: true });
                             await sendDualAlert(
-                                `🚨 Jobs Found but ignored (Capacity Full or Low Price).`,
-                                `Jobs available (ignored)`,
+                                `🚨 Jobs Found but Capacity FULL!\nAccepted: ${capacity.single.current}/${capacity.single.max}\nGrouped: ${capacity.grouped.current}/${capacity.grouped.max}`,
+                                `Jobs found (Capacity Full)`,
                                 screenshotBuffer
                             );
+                        } else {
+                            // C. Scrape Jobs
+                            console.log('Scraping Jobs...');
+                            const jobButtons = await page.locator('a:has-text("Open requirements"), button:has-text("Open requirements")').all();
+
+                            let availableJobs = [];
+                            for (const btn of jobButtons) {
+                                const url = await btn.getAttribute('href');
+                                if (!url) continue;
+
+                                const card = btn.locator('xpath=./ancestor::div[contains(@class, "row") or contains(@class, "Card")]').first();
+                                let cardText = '';
+                                if (await card.count() > 0) {
+                                    cardText = await card.innerText();
+                                } else {
+                                    cardText = await btn.locator('..').locator('..').innerText();
+                                }
+
+                                const priceMatch = cardText.match(/\$(\d+(\.\d+)?)/);
+                                const price = priceMatch ? parseFloat(priceMatch[1]) : 0;
+                                const varMatch = cardText.match(/(\d+)\s+variations/i);
+                                const isGrouped = !!varMatch;
+                                const variationCount = isGrouped ? parseInt(varMatch[1], 10) : 1;
+                                const fullUrl = url.startsWith('http') ? url : new URL(url, CONFIG.url).toString();
+
+                                availableJobs.push({
+                                    url: fullUrl,
+                                    price: price,
+                                    isGrouped: isGrouped,
+                                    variations: variationCount,
+                                    pricePerUnit: isGrouped ? (price / variationCount) : price
+                                });
+                            }
+
+                            console.log(`Found ${availableJobs.length} potential jobs.`);
+
+                            const singleJobs = availableJobs.filter(j => !j.isGrouped && j.price >= CONFIG.minPriceSingle).sort((a, b) => b.price - a.price);
+                            const groupedJobs = availableJobs.filter(j => j.isGrouped && j.pricePerUnit >= CONFIG.minPriceVariation).sort((a, b) => b.price - a.price);
+
+                            let jobsToProcess = [];
+                            jobsToProcess.push(...singleJobs.slice(0, capacity.single.available));
+                            jobsToProcess.push(...groupedJobs.slice(0, capacity.grouped.available));
+
+                            if (jobsToProcess.length > 0) {
+                                console.log(`Attempting to accept ${jobsToProcess.length} jobs (Limit: ${CONFIG.maxConcurrentTabs})...`);
+                                while (jobsToProcess.length > 0) {
+                                    const batch = jobsToProcess.splice(0, CONFIG.maxConcurrentTabs);
+                                    const results = await Promise.all(batch.map(job => acceptJob(browser, job.url, contextOptions)));
+                                    const successCount = results.filter(r => r).length;
+                                    if (successCount > 0) await sendDualAlert(`✅ Accepted ${successCount} new jobs!`);
+                                }
+                            } else {
+                                console.log('No jobs matched criteria.');
+                                const screenshotBuffer = await page.screenshot({ fullPage: true });
+                                await sendDualAlert(`🚨 Jobs Found but ignored.`, `Jobs available (ignored)`, screenshotBuffer);
+                            }
                         }
                     }
                 }
-            }
 
             } catch (innerError) {
-            console.error(`⚠️ loop error: ${innerError.message}`);
-            if (!IS_CI) throw innerError;
-        }
+                console.error(`⚠️ loop error: ${innerError.message}`);
+                if (!IS_CI) throw innerError;
+            }
 
-        if (IS_CI) {
-            if (Date.now() - startTime >= LOOP_DURATION) keepRunning = false;
-            else await page.waitForTimeout(CHECK_INTERVAL);
-        } else {
-            keepRunning = false;
+            if (IS_CI) {
+                if (Date.now() - startTime >= LOOP_DURATION) keepRunning = false;
+                else await page.waitForTimeout(CHECK_INTERVAL);
+            } else {
+                keepRunning = false;
+            }
         }
-    }
     } catch (error) {
-    console.error('Fatal:', error);
-    await sendDualAlert(`⚠️ Checker Error: ${error.message}`);
-    process.exit(1);
-} finally {
-    await browser.close();
-}
+        console.error('Fatal:', error);
+        await sendDualAlert(`⚠️ Checker Error: ${error.message}`);
+        process.exit(1);
+    } finally {
+        await browser.close();
+    }
 }
 
 run();
