@@ -16,7 +16,8 @@ const CONFIG = {
     // New Configs
     minPriceSingle: parseFloat(process.env.MIN_PRICE_SINGLE || '25'),
     minPriceVariation: parseFloat(process.env.MIN_PRICE_VARIATION || '6'),
-    maxConcurrentTabs: 5
+    maxConcurrentTabs: 5,
+    checkOnly: process.env.CHECK_ONLY === '1'
 };
 
 async function sendTelegramAlert(message, imageBuffer) {
@@ -206,6 +207,10 @@ async function run() {
     if (IS_CI) console.log('🚀 Mode: Cloud (CI) - 6h Loop');
     else console.log('💻 Mode: Local - Single Run');
 
+    if (CONFIG.checkOnly) {
+        console.log('🛡️ SAFETY MODE: "CHECK_ONLY" is ON. Auto-Accept disabled.');
+    }
+
     if (!CONFIG.email || !CONFIG.password || !CONFIG.url || !CONFIG.loginUrl) {
         console.error('Missing configuration.');
         process.exit(1);
@@ -274,15 +279,6 @@ async function run() {
                     console.log('❌ phrase NOT FOUND! Tasks available!');
 
                     // --- AUTO-ACCEPT LOGIC ---
-
-                    // A. Refresh First (User Requirement)
-                    console.log('🔄 Refreshing page to get latest jobs...');
-                    await page.reload({ waitUntil: 'networkidle' });
-
-                    // B. Check Capacity
-                    console.log('Checking Capacity...');
-                    const capacity = await getCapacity(page);
-                    console.log(`Limit: Single ${capacity.single.available} | Grouped ${capacity.grouped.available}`);
 
                     if (capacity.single.available === 0 && capacity.grouped.available === 0) {
                         console.log('⚠️ Capacity FULL. Sending alert only.');
@@ -410,26 +406,27 @@ async function run() {
                         }
                     }
                 }
+            }
 
             } catch (innerError) {
-                console.error(`⚠️ loop error: ${innerError.message}`);
-                if (!IS_CI) throw innerError;
-            }
-
-            if (IS_CI) {
-                if (Date.now() - startTime >= LOOP_DURATION) keepRunning = false;
-                else await page.waitForTimeout(CHECK_INTERVAL);
-            } else {
-                keepRunning = false;
-            }
+            console.error(`⚠️ loop error: ${innerError.message}`);
+            if (!IS_CI) throw innerError;
         }
-    } catch (error) {
-        console.error('Fatal:', error);
-        await sendDualAlert(`⚠️ Checker Error: ${error.message}`);
-        process.exit(1);
-    } finally {
-        await browser.close();
+
+        if (IS_CI) {
+            if (Date.now() - startTime >= LOOP_DURATION) keepRunning = false;
+            else await page.waitForTimeout(CHECK_INTERVAL);
+        } else {
+            keepRunning = false;
+        }
     }
+    } catch (error) {
+    console.error('Fatal:', error);
+    await sendDualAlert(`⚠️ Checker Error: ${error.message}`);
+    process.exit(1);
+} finally {
+    await browser.close();
+}
 }
 
 run();
