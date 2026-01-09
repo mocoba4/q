@@ -241,7 +241,13 @@ async function run() {
 
             try {
                 // 1. Navigate & Login Check
-                await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                if (page.url().includes(CONFIG.url)) {
+                    console.log('🔄 Reloading page...');
+                    await page.reload({ waitUntil: 'networkidle' });
+                } else {
+                    console.log('Navigating to target...');
+                    await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                }
                 if (page.url().includes('/users/login')) {
                     console.log('Logging in...');
                     const emailInput = page.locator('input[type="email"], input[name*="email"]');
