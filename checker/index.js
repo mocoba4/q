@@ -234,6 +234,7 @@ async function run() {
     try {
         let keepRunning = true;
         while (keepRunning) {
+            const cycleStart = Date.now();
             iterations++;
             if (IS_CI) {
                 const timeRemaining = Math.round((LOOP_DURATION - (Date.now() - startTime)) / 1000);
@@ -290,10 +291,13 @@ async function run() {
                 }
 
                 if (phraseFound) {
-                    console.log('✅ Phrase FOUND (No jobs). Reloading instantly...');
+                    const elapsed = Date.now() - cycleStart;
+                    const waitTime = Math.max(0, MIN_CYCLE_DURATION - elapsed);
+                    console.log(`✅ Phrase FOUND (No jobs). Waiting ${(waitTime / 1000).toFixed(1)}s to complete 20s cycle...`);
+                    await page.waitForTimeout(waitTime);
                     // Loop naturally wraps around to "Reload" step immediately.
                 } else {
-                    console.log('❌ phrase NOT FOUND! Tasks likely available!');
+                    console.log('❌ phrase NOT FOUND! Tasks likely available! Starting Logic IMMEDIATELY.');
 
                     // --- AUTO-ACCEPT LOGIC ---
 
