@@ -226,7 +226,7 @@ async function run() {
     const page = await mainContext.newPage();
 
     const LOOP_DURATION = 6 * 60 * 60 * 1000;
-    const CHECK_INTERVAL = 45 * 1000;
+    const CHECK_INTERVAL = 5 * 1000;
     const startTime = Date.now();
     let iterations = 0;
 
