@@ -273,16 +273,26 @@ async function run() {
                     console.warn(`Warning: URL seems off: ${page.url()}`);
                 }
 
-                // 2. Check for Jobs
+                // 2. Check for "No Jobs" Phrase
                 console.log('Checking for target phrase...');
-                const content = await page.content();
 
-                if (content.includes(CONFIG.targetPhrase)) {
-                    // PHRASE FOUND = NO JOBS
-                    console.log('✅ Phrase FOUND (No jobs).');
+                // Wait for the phrase to appear. If it appears, we know there are no jobs.
+                // If it DOESN'T appear within timeout, we assume jobs might be available.
+                // Using a timeout (e.g. 3s) handles the "loading delay" false positive.
+                let phraseFound = false;
+                try {
+                    const phraseLocator = page.getByText(CONFIG.targetPhrase);
+                    await phraseLocator.waitFor({ state: 'visible', timeout: 3000 });
+                    phraseFound = true;
+                } catch (e) {
+                    phraseFound = false;
+                }
+
+                if (phraseFound) {
+                    console.log('✅ Phrase FOUND (No jobs). Reloading instantly...');
+                    // Loop naturally wraps around to "Reload" step immediately.
                 } else {
-                    // PHRASE NOT FOUND = IDLE/JOBS available
-                    console.log('❌ phrase NOT FOUND! Tasks available!');
+                    console.log('❌ phrase NOT FOUND! Tasks likely available!');
 
                     // --- AUTO-ACCEPT LOGIC ---
 
@@ -293,9 +303,10 @@ async function run() {
                         const ntfyMsg = `Tasks available! (Auto-Accept Disabled)`;
                         await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
                     } else {
-                        // A. Refresh First
-                        console.log('🔄 Refreshing page to get latest jobs...');
-                        await page.reload({ waitUntil: 'networkidle' });
+                        // A. Refresh First (SKIP this now, we just refreshed/loaded)
+                        // User said: "Reloads... Checks... If not found trigger logic"
+                        // But wait, if we arrived here, we probably haven't grabbed the latest list perfectly if the page was "loading".
+                        // Use the current page state since we waited 3s.
 
                         // B. Check Capacity
                         console.log('Checking Capacity...');
@@ -377,7 +388,8 @@ async function run() {
 
             if (IS_CI) {
                 if (Date.now() - startTime >= LOOP_DURATION) keepRunning = false;
-                else await page.waitForTimeout(CHECK_INTERVAL);
+                // REMOVED CHECK_INTERVAL WAIT for fast looping
+                // We depend on networkidle in reload() to pace us roughly.
             } else {
                 keepRunning = false;
             }
