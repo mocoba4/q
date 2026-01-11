@@ -370,6 +370,12 @@ async function run() {
                             jobsToProcess.push(...groupedJobs.slice(0, capacity.grouped.available));
 
                             if (jobsToProcess.length > 0) {
+                                // FIRE "FOUND" ALERT IMMEDIATELY (Non-blocking for speed)
+                                const count = jobsToProcess.length;
+                                const msg = `🚨 Found ${count} Jobs! Attempting to accept...`;
+                                console.log(msg);
+                                sendDualAlert(msg, msg).catch(e => console.error('Pre-alert error:', e));
+
                                 console.log(`Attempting to accept ${jobsToProcess.length} jobs (Limit: ${CONFIG.maxConcurrentTabs})...`);
                                 while (jobsToProcess.length > 0) {
                                     const batch = jobsToProcess.splice(0, CONFIG.maxConcurrentTabs);
