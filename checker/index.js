@@ -370,14 +370,17 @@ async function run() {
                             jobsToProcess.push(...groupedJobs.slice(0, capacity.grouped.available));
 
                             if (jobsToProcess.length > 0) {
-                                // FIRE "FOUND" ALERT IMMEDIATELY (Non-blocking / Background)
+                                // FIRE "FOUND" ALERT IMMEDIATELY (AWAIT to ensure receipt)
                                 const count = jobsToProcess.length;
                                 const msg = `🚨 Found ${count} Jobs! Attempting to accept...`;
                                 console.log(msg);
-                                // Start Screenshot + Alert in background (don't await)
-                                page.screenshot({ fullPage: true }).then(buff => {
-                                    sendDualAlert(msg, msg, buff).catch(e => console.error('Pre-alert error:', e));
-                                }).catch(e => console.error('Screenshot error:', e));
+
+                                try {
+                                    const screenshotBuffer = await page.screenshot({ fullPage: true });
+                                    await sendDualAlert(msg, msg, screenshotBuffer);
+                                } catch (e) {
+                                    console.error('Pre-alert error (continuing logic):', e.message);
+                                }
 
                                 console.log(`Attempting to accept ${jobsToProcess.length} jobs (Limit: ${CONFIG.maxConcurrentTabs})...`);
                                 while (jobsToProcess.length > 0) {
