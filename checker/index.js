@@ -136,14 +136,14 @@ async function getCapacity(page) {
     }
 }
 
-async function acceptJob(browser, jobUrl, contextOptions) {
+async function acceptJob(browser, job, contextOptions) {
     let page;
     try {
         const context = await browser.newContext(contextOptions);
         page = await context.newPage();
 
-        console.log(`Open Job: ${jobUrl}`);
-        await page.goto(jobUrl, { waitUntil: 'domcontentloaded' });
+        console.log(`Open Job: ${job.url}`);
+        await page.goto(job.url, { waitUntil: 'domcontentloaded' });
 
         // Execute Wait and Scroll simultaneously (Total wait: 2s)
         console.log('Waiting 2s (with scroll)...');
@@ -160,7 +160,6 @@ async function acceptJob(browser, jobUrl, contextOptions) {
         ]);
 
         // Click Accept
-        // Try multiple selectors or text
         const acceptBtn = page.getByText('Accept task', { exact: true }).or(page.locator('button:has-text("Accept task")'));
         if (await acceptBtn.count() > 0) {
             await acceptBtn.first().click();
@@ -170,22 +169,38 @@ async function acceptJob(browser, jobUrl, contextOptions) {
             await page.waitForTimeout(1000);
 
             // Try to handle confirmation
-            // Look for "Yes", "Confirm", "OK"
             const confirmBtn = page.getByRole('button', { name: 'Yes' })
                 .or(page.getByRole('button', { name: 'Confirm' }))
                 .or(page.getByRole('button', { name: 'OK' }))
                 .or(page.getByText('Yes', { exact: true }));
 
             if (await confirmBtn.count() > 0) {
-                // Take debug screenshot of modal first time? 
-                // Creating a simplified debug flow: just click it.
                 await confirmBtn.first().click();
-                console.log('Clicked Modal Confirmation.');
-                await page.waitForTimeout(2000); // Wait for action
-                return true;
+                console.log('Clicked Modal Confirmation. Verifying...');
+
+                // STRICT VERIFICATION: Wait for navigation to My Requests
+                try {
+                    // Give it up to 10s to redirect
+                    await page.waitForURL('**/my-requests/**', { timeout: 10000 });
+
+                    // Double check URL just to be safe
+                    if (page.url().includes('/my-requests/')) {
+                        console.log(`✅ Job SECURED! ($${job.price})`);
+
+                        // Capture Proof
+                        const screenshot = await page.screenshot({ fullPage: true });
+                        const alertMsg = `✅ Job Secured!\nPrice: $${job.price}\nType: ${job.isGrouped ? 'Grouped' : 'Single'}`;
+                        await sendDualAlert(alertMsg, `Job Secured ($${job.price})`, screenshot);
+
+                        return true;
+                    }
+                } catch (e) {
+                    console.warn(`❌ Verification Failed: URL is ${page.url()}`);
+                }
+                return false;
             } else {
                 console.log('No confirmation modal found? (Or auto-accepted?)');
-                return true;
+                return false;
             }
         } else {
             console.log('Accept button not found.');
@@ -193,7 +208,7 @@ async function acceptJob(browser, jobUrl, contextOptions) {
         }
 
     } catch (e) {
-        console.error(`Error accepting job ${jobUrl}:`, e.message);
+        console.error(`Error accepting job ${job.url}:`, e.message);
         return false;
     } finally {
         if (page) await page.close();
@@ -385,9 +400,9 @@ async function run() {
                                 console.log(`Attempting to accept ${jobsToProcess.length} jobs (Limit: ${CONFIG.maxConcurrentTabs})...`);
                                 while (jobsToProcess.length > 0) {
                                     const batch = jobsToProcess.splice(0, CONFIG.maxConcurrentTabs);
-                                    const results = await Promise.all(batch.map(job => acceptJob(browser, job.url, contextOptions)));
+                                    const results = await Promise.all(batch.map(job => acceptJob(browser, job, contextOptions)));
                                     const successCount = results.filter(r => r).length;
-                                    if (successCount > 0) await sendDualAlert(`✅ Accepted ${successCount} new jobs!`);
+                                    if (successCount > 0) console.log(`Batch complete. ${successCount} jobs secured.`);
                                 }
                             } else {
                                 console.log('No jobs matched criteria.');
