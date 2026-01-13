@@ -55,3 +55,6 @@ jobs:
         TARGET_URL: ${{ secrets.TARGET_URL }}
         LOGIN_URL: ${{ secrets.LOGIN_URL }}
         NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        MIN_PRICE_SINGLE: ${{ secrets.MIN_PRICE_SINGLE }}
+        MIN_PRICE_VARIATION: ${{ secrets.MIN_PRICE_VARIATION }}
+        CHECK_ONLY: ${{ secrets.CHECK_ONLY }}
