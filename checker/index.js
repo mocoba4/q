@@ -17,7 +17,7 @@ const CONFIG = {
     minPriceSingle: parseFloat(process.env.MIN_PRICE_SINGLE || '25'),
     minPriceVariation: parseFloat(process.env.MIN_PRICE_VARIATION || '6'),
     maxConcurrentTabs: 5,
-    checkOnly: process.env.CHECK_ONLY === '1'
+    checkOnly: /^(1|true|on|yes)$/i.test(process.env.CHECK_ONLY || '')
 };
 
 async function sendTelegramAlert(message, imageBuffer) {
