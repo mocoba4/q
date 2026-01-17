@@ -8,8 +8,8 @@ const CONFIG = {
     url: process.env.TARGET_URL,
     loginUrl: process.env.LOGIN_URL,
     targetPhrase: 'Looks like all tasks were picked up before you',
-    email: process.env.CG_EMAIL,
-    password: process.env.CG_PASSWORD,
+    email: process.env.CG_EMAIL, // Kept for backward compatibility if only one account
+    password: process.env.CG_PASSWORD, // Kept for backward compatibility if only one account
     telegramToken: process.env.TELEGRAM_BOT_TOKEN,
     telegramChatId: process.env.TELEGRAM_CHAT_ID,
     ntfyTopic: process.env.NTFY_TOPIC,
@@ -19,6 +19,25 @@ const CONFIG = {
     maxConcurrentTabs: 5,
     checkOnly: /^(1|true|on|yes)$/i.test(process.env.CHECK_ONLY || '')
 };
+
+// --- UPDATED CONFIG FOR MULTI-ACCOUNT ---
+const ACCOUNT_COUNT = parseInt(process.env.ACCOUNT_COUNT || '1', 10);
+const ACCOUNTS = [];
+for (let i = 1; i <= 5; i++) { // Support up to 5 accounts
+    const suffix = i === 1 ? '' : i; // CG_EMAIL, CG_EMAIL2...
+    const email = process.env[`CG_EMAIL${suffix}`];
+    const password = process.env[`CG_PASSWORD${suffix}`];
+    if (email && password) {
+        ACCOUNTS.push({ id: i, email, password });
+    }
+}
+// Limit by ACCOUNT_COUNT if set lower than available secrets
+const ACTIVE_ACCOUNTS = ACCOUNTS.slice(0, ACCOUNT_COUNT);
+if (ACTIVE_ACCOUNTS.length === 0) {
+    console.error('No active accounts configured. Please set CG_EMAIL and CG_PASSWORD (and optionally CG_EMAIL2, etc.)');
+    process.exit(1);
+}
+
 
 async function sendTelegramAlert(message, imageBuffer) {
     if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
@@ -93,7 +112,8 @@ async function sendDualAlert(telegramMsg, ntfyMsg, imageBuffer) {
 
 const fs = require('fs');
 const path = require('path');
-const SESSION_FILE = path.join(__dirname, 'session.json');
+// SESSION_FILE is now dynamic per account
+// const SESSION_FILE = path.join(__dirname, 'session.json');
 
 // --- HELPER FUNCTIONS ---
 
@@ -132,43 +152,49 @@ async function getCapacity(page) {
         };
     } catch (e) {
         console.error('Error fetching capacity:', e);
-        return { single: { available: 0 }, grouped: { available: 0 } };
+        return { single: { available: 0, current: 0, max: 0 }, grouped: { available: 0, current: 0, max: 0 } };
     }
 }
 
-async function acceptJob(browser, job, contextOptions) {
+// --- JOB PROCESSING ---
+async function processJob(agent, job) {
     let page;
     try {
-        const context = await browser.newContext(contextOptions);
-        page = await context.newPage();
+        // Create a new page within the agent's context for each job
+        page = await agent.context.newPage();
 
-        console.log(`Open Job: ${job.url}`);
+        console.log(`[Account ${agent.id}] Handling Job: ${job.url}`);
+
+        // Agent 1 clicks, others go direct
+        // Actually, just go direct for everyone is safer/consistent? 
+        // User requested: "Agent 1 clicks... Agent 2+ goto".
+        // BUT logic is simpler if everyone goes to URL. Agent 1 "click" was just the scrape source.
+        // I will use goto for ALL for robust "Greedy" speed. 
+        // Wait... User logic: "Copy found requirements page URLs... just go straight".
+        // Yes, verify strictly.
         await page.goto(job.url, { waitUntil: 'domcontentloaded' });
 
-        // Execute Wait and Scroll simultaneously (Total wait: 2s)
-        console.log('Waiting 2s (with scroll)...');
+        // 1.5s Wait (Total)
+        console.log(`[Account ${agent.id}] waiting 1.5s...`);
         await Promise.all([
-            page.waitForTimeout(2000), // Enforce strictly 2 seconds wait
+            page.waitForTimeout(1500),
             (async () => {
                 try {
-                    await page.waitForTimeout(500); // 0.5s loading buffer
-                    await page.mouse.wheel(0, 300); // Scroll Down
-                    await page.waitForTimeout(500); // Hold
-                    await page.mouse.wheel(0, -300); // Scroll Up
-                } catch (e) { console.error('Scroll error (non-fatal):', e.message); }
+                    await page.waitForTimeout(500);
+                    await page.mouse.wheel(0, 300);
+                    await page.waitForTimeout(500);
+                    await page.mouse.wheel(0, -300);
+                } catch (e) { /* Scroll errors are non-fatal */ }
             })()
         ]);
 
-        // Click Accept
         const acceptBtn = page.getByText('Accept task', { exact: true }).or(page.locator('button:has-text("Accept task")'));
         if (await acceptBtn.count() > 0) {
             await acceptBtn.first().click();
-            console.log('Clicked Accept Task...');
+            console.log(`[Account ${agent.id}] Clicked Accept Task...`);
 
-            // Wait for Modal
-            await page.waitForTimeout(1000);
-
-            // Try to handle confirmation
+            // Handle Modal
+            await page.waitForTimeout(500); // Shorter wait for modal
             const confirmBtn = page.getByRole('button', { name: 'Yes' })
                 .or(page.getByRole('button', { name: 'Confirm' }))
                 .or(page.getByRole('button', { name: 'OK' }))
@@ -176,48 +202,35 @@ async function acceptJob(browser, job, contextOptions) {
 
             if (await confirmBtn.count() > 0) {
                 await confirmBtn.first().click();
-                console.log('Clicked Modal Confirmation. Verifying...');
+                console.log(`[Account ${agent.id}] Clicked Modal Confirmation. Verifying...`);
 
-                // STRICT VERIFICATION: Wait for navigation to My Requests
+                // Verification
                 try {
-                    // Give it up to 10s to redirect
                     await page.waitForURL('**/my-requests/**', { timeout: 10000 });
-
-                    // Double check URL just to be safe
                     if (page.url().includes('/my-requests/')) {
-                        console.log(`✅ Job SECURED! ($${job.price})`);
-
-                        // Capture Proof
                         const screenshot = await page.screenshot({ fullPage: true });
-                        const alertMsg = `✅ Job Secured!\nPrice: $${job.price}\nType: ${job.isGrouped ? 'Grouped' : 'Single'}`;
-                        await sendDualAlert(alertMsg, `Job Secured ($${job.price})`, screenshot);
-
+                        const msg = `✅ Account ${agent.id} SECURED Job!\nPrice: $${job.price}\nType: ${job.isGrouped ? 'Grouped' : 'Single'}`;
+                        await sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot);
                         return true;
                     }
-                } catch (e) {
-                    console.warn(`❌ Verification Failed: URL is ${page.url()}`);
-                }
-                return false;
+                } catch (e) { console.log(`[Account ${agent.id}] Verification Failed: ${e.message}`); }
             } else {
-                console.log('No confirmation modal found? (Or auto-accepted?)');
-                return false;
+                console.log(`[Account ${agent.id}] No confirmation modal found? (Or auto-accepted?)`);
             }
         } else {
-            console.log('Accept button not found.');
-            return false;
+            console.log(`[Account ${agent.id}] Accept button not found.`);
         }
-
     } catch (e) {
-        console.error(`Error accepting job ${job.url}:`, e.message);
-        return false;
+        console.error(`[Account ${agent.id}] Error processing job ${job.url}: ${e.message}`);
     } finally {
         if (page) await page.close();
     }
+    return false;
 }
 
 
 async function run() {
-    console.log('Starting Website Checker...');
+    console.log('Starting Multi-Account Swarm...');
     const IS_CI = process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
     if (IS_CI) console.log('🚀 Mode: Cloud (CI) - 6h Loop');
     else console.log('💻 Mode: Local - Single Run');
@@ -226,28 +239,72 @@ async function run() {
         console.log('🛡️ SAFETY MODE: "CHECK_ONLY" is ON. Auto-Accept disabled.');
     }
 
-    if (!CONFIG.email || !CONFIG.password || !CONFIG.url || !CONFIG.loginUrl) {
-        console.error('Missing configuration.');
+    if (!CONFIG.url || !CONFIG.loginUrl) {
+        console.error('Missing TARGET_URL or LOGIN_URL configuration.');
         process.exit(1);
     }
 
     const showBrowser = process.env.SHOW_BROWSER === 'true';
-    let contextOptions = {};
-    if (fs.existsSync(SESSION_FILE)) contextOptions.storageState = SESSION_FILE;
+
+    // Safety Mode Override: If checkOnly, only use the first account for spotting
+    const effectiveAccounts = CONFIG.checkOnly ? [ACTIVE_ACCOUNTS[0]] : ACTIVE_ACCOUNTS;
+    console.log(`Debug: Initializing ${effectiveAccounts.length} accounts.`);
 
     const browser = await chromium.launch({ headless: !showBrowser });
-    // Main context for the "Listing" page
-    const mainContext = await browser.newContext(contextOptions);
-    const page = await mainContext.newPage();
+    const agents = [];
 
+    // --- INIT SWARM ---
+    for (const acc of effectiveAccounts) {
+        console.log(`Initializing Account ${acc.id} (${acc.email})...`);
+        const sessionPath = path.join(__dirname, `session_${acc.id}.json`);
+        let ctxOpts = {};
+        if (fs.existsSync(sessionPath)) ctxOpts.storageState = sessionPath;
+
+        const context = await browser.newContext(ctxOpts);
+        const page = await context.newPage();
+
+        // Login Flow
+        await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+        if (page.url().includes('/users/login')) {
+            console.log(`[Account ${acc.id}] Logging in...`);
+            const emailInput = page.locator('input[type="email"], input[name*="email"]');
+            const passwordInput = page.locator('input[type="password"]');
+
+            if (await emailInput.count() > 0) await emailInput.fill(acc.email);
+            if (await passwordInput.count() > 0) await passwordInput.fill(acc.password);
+
+            try {
+                const rememberMe = page.getByLabel('Remember me').or(page.getByText('Remember me'));
+                if (await rememberMe.count() > 0) await rememberMe.first().click();
+            } catch (e) { /* ignore if remember me not found */ }
+
+            const submitButton = page.locator('button[type="submit"], input[type="submit"]');
+            await Promise.all([
+                page.waitForURL('**/modeling-requests', { timeout: 15000 }), // Increased timeout for login
+                submitButton.click()
+            ]);
+            await context.storageState({ path: sessionPath });
+        }
+        console.log(`✅ Account ${acc.id}: Logged In`);
+
+        // Park on available tasks page
+        if (!page.url().includes('modeling-requests')) {
+            console.log(`[Account ${acc.id}] Navigating to main tasks page.`);
+            await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+        }
+
+        agents.push({ id: acc.id, page, context, sessionPath, browser });
+    }
+
+    // --- MAIN LOOP ---
+    const Agent1 = agents[0]; // The Spotter
     const LOOP_DURATION = 6 * 60 * 60 * 1000;
-    const CHECK_INTERVAL = 0; // Not used with dynamic cycle logic
     const MIN_CYCLE_DURATION = 20 * 1000;
     const startTime = Date.now();
     let iterations = 0;
+    let keepRunning = true;
 
     try {
-        let keepRunning = true;
         while (keepRunning) {
             const cycleStart = Date.now();
             iterations++;
@@ -257,48 +314,20 @@ async function run() {
             }
 
             try {
-                // 1. Navigate & Login Check
-                if (page.url().includes(CONFIG.url)) {
-                    console.log('🔄 Reloading page...');
-                    await page.reload({ waitUntil: 'networkidle' });
+                // 1. Refresh Spotter (Agent 1)
+                if (Agent1.page.url().includes(CONFIG.url)) {
+                    console.log('[Agent 1] Reloading page...');
+                    await Agent1.page.reload({ waitUntil: 'networkidle' });
                 } else {
-                    console.log('Navigating to target...');
-                    await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
-                }
-                if (page.url().includes('/users/login')) {
-                    console.log('Logging in...');
-                    const emailInput = page.locator('input[type="email"], input[name*="email"]');
-                    const passwordInput = page.locator('input[type="password"]');
-
-                    if (await emailInput.count() > 0) await emailInput.fill(CONFIG.email);
-                    if (await passwordInput.count() > 0) await passwordInput.fill(CONFIG.password);
-
-                    try {
-                        const rememberMe = page.getByLabel('Remember me').or(page.getByText('Remember me'));
-                        if (await rememberMe.count() > 0) await rememberMe.first().click();
-                    } catch (e) { }
-
-                    const submitButton = page.locator('button[type="submit"], input[type="submit"]');
-                    await Promise.all([
-                        page.waitForURL('**/modeling-requests'),
-                        submitButton.click()
-                    ]);
-                    await context.storageState({ path: SESSION_FILE });
-                }
-
-                if (!page.url().includes('modeling-requests')) {
-                    console.warn(`Warning: URL seems off: ${page.url()}`);
+                    console.log('[Agent 1] Navigating to target...');
+                    await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
                 }
 
                 // 2. Check for "No Jobs" Phrase
-                console.log('Checking for target phrase...');
-
-                // Wait for the phrase to appear. If it appears, we know there are no jobs.
-                // If it DOESN'T appear within timeout, we assume jobs might be available.
-                // Using a timeout (e.g. 3s) handles the "loading delay" false positive.
+                console.log('[Agent 1] Checking for target phrase...');
                 let phraseFound = false;
                 try {
-                    const phraseLocator = page.getByText(CONFIG.targetPhrase);
+                    const phraseLocator = Agent1.page.getByText(CONFIG.targetPhrase);
                     await phraseLocator.waitFor({ state: 'visible', timeout: 3000 });
                     phraseFound = true;
                 } catch (e) {
@@ -309,42 +338,43 @@ async function run() {
                     const elapsed = Date.now() - cycleStart;
                     const waitTime = Math.max(0, MIN_CYCLE_DURATION - elapsed);
                     console.log(`✅ Phrase FOUND (No jobs). Waiting ${(waitTime / 1000).toFixed(1)}s to complete 20s cycle...`);
-                    await page.waitForTimeout(waitTime);
-                    // Loop naturally wraps around to "Reload" step immediately.
+                    await Agent1.page.waitForTimeout(waitTime);
                 } else {
-                    console.log('❌ phrase NOT FOUND! Tasks likely available! Starting Logic IMMEDIATELY.');
+                    console.log('❌ Phrase NOT FOUND! Tasks likely available! Starting Logic IMMEDIATELY.');
 
                     // --- AUTO-ACCEPT LOGIC ---
-
                     if (CONFIG.checkOnly) {
                         console.log('🛡️ Check Only Mode active. Sending Alert (No Actions Taken).');
-                        const screenshotBuffer = await page.screenshot({ fullPage: true });
+                        const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                         const telegramMsg = `🚨 Task Alert (Check Only)\nTasks available, but Auto-Accept is DISABLED.\nTime: ${new Date().toUTCString()}`;
                         const ntfyMsg = `Tasks available! (Auto-Accept Disabled)`;
                         await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
                     } else {
-                        // A. Refresh First (SKIP this now, we just refreshed/loaded)
-                        // User said: "Reloads... Checks... If not found trigger logic"
-                        // But wait, if we arrived here, we probably haven't grabbed the latest list perfectly if the page was "loading".
-                        // Use the current page state since we waited 3s.
+                        console.log('🚨 JOBS FOUND! SWARM ATTACK!');
 
-                        // B. Check Capacity
-                        console.log('Checking Capacity...');
-                        const capacity = await getCapacity(page);
-                        console.log(`Limit: Single ${capacity.single.available} | Grouped ${capacity.grouped.available}`);
+                        // A. Parallel Capacity Scan for all active agents
+                        const capacities = await Promise.all(agents.map(async (a) => {
+                            const cap = await getCapacity(a.page);
+                            console.log(`[Account ${a.id}] Capacity: Single ${cap.single.available} | Grouped ${cap.grouped.available}`);
+                            return { id: a.id, cap };
+                        }));
 
-                        if (capacity.single.available === 0 && capacity.grouped.available === 0) {
-                            console.log('⚠️ Capacity FULL. Sending alert only.');
-                            const screenshotBuffer = await page.screenshot({ fullPage: true });
+                        // Check if any agent has capacity
+                        const totalAvailableSingle = capacities.reduce((sum, c) => sum + c.cap.single.available, 0);
+                        const totalAvailableGrouped = capacities.reduce((sum, c) => sum + c.cap.grouped.available, 0);
+
+                        if (totalAvailableSingle === 0 && totalAvailableGrouped === 0) {
+                            console.log('⚠️ All agents have FULL capacity. Sending alert only.');
+                            const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                             await sendDualAlert(
-                                `🚨 Jobs Found but Capacity FULL!\nAccepted: ${capacity.single.current}/${capacity.single.max}\nGrouped: ${capacity.grouped.current}/${capacity.grouped.max}`,
-                                `Jobs found (Capacity Full)`,
+                                `🚨 Jobs Found but ALL Agents at FULL Capacity!`,
+                                `Jobs found (All Agents Full)`,
                                 screenshotBuffer
                             );
                         } else {
-                            // C. Scrape Jobs
-                            console.log('Scraping Jobs...');
-                            const jobButtons = await page.locator('a:has-text("Open requirements"), button:has-text("Open requirements")').all();
+                            // B. Scrape from Agent 1 (Spotter)
+                            console.log('[Agent 1] Scraping Jobs...');
+                            const jobButtons = await Agent1.page.locator('a:has-text("Open requirements"), button:has-text("Open requirements")').all();
 
                             let availableJobs = [];
                             for (const btn of jobButtons) {
@@ -356,6 +386,7 @@ async function run() {
                                 if (await card.count() > 0) {
                                     cardText = await card.innerText();
                                 } else {
+                                    // Fallback for different DOM structures
                                     cardText = await btn.locator('..').locator('..').innerText();
                                 }
 
@@ -375,38 +406,73 @@ async function run() {
                                 });
                             }
 
-                            console.log(`Found ${availableJobs.length} potential jobs.`);
+                            console.log(`[Agent 1] Found ${availableJobs.length} potential jobs.`);
 
                             const singleJobs = availableJobs.filter(j => !j.isGrouped && j.price >= CONFIG.minPriceSingle).sort((a, b) => b.price - a.price);
                             const groupedJobs = availableJobs.filter(j => j.isGrouped && j.pricePerUnit >= CONFIG.minPriceVariation).sort((a, b) => b.price - a.price);
 
-                            let jobsToProcess = [];
-                            jobsToProcess.push(...singleJobs.slice(0, capacity.single.available));
-                            jobsToProcess.push(...groupedJobs.slice(0, capacity.grouped.available));
+                            const validJobs = [...singleJobs, ...groupedJobs]; // Combine for dispatch
 
-                            if (jobsToProcess.length > 0) {
-                                // FIRE "FOUND" ALERT IMMEDIATELY (AWAIT to ensure receipt)
-                                const count = jobsToProcess.length;
-                                const msg = `🚨 Found ${count} Jobs! Attempting to accept...`;
-                                console.log(msg);
+                            if (validJobs.length > 0) {
+                                // C. Dispatch Jobs to Agents
+                                const agentQueues = {}; // { 1: [job1], 2: [job2] }
+                                agents.forEach(a => agentQueues[a.id] = []);
 
-                                try {
-                                    const screenshotBuffer = await page.screenshot({ fullPage: true });
-                                    await sendDualAlert(msg, msg, screenshotBuffer);
-                                } catch (e) {
-                                    console.error('Pre-alert error (continuing logic):', e.message);
+                                // Create a mutable copy of capacities for dispatch logic
+                                const currentCapacities = capacities.map(c => ({
+                                    id: c.id,
+                                    cap: {
+                                        single: { ...c.cap.single },
+                                        grouped: { ...c.cap.grouped }
+                                    }
+                                }));
+
+                                for (const job of validJobs) {
+                                    const requiredType = job.isGrouped ? 'grouped' : 'single';
+
+                                    // Find first agent with room for this job type
+                                    const bestAgentCapacity = currentCapacities.find(c => c.cap[requiredType].available > 0);
+
+                                    if (bestAgentCapacity) {
+                                        agentQueues[bestAgentCapacity.id].push(job);
+                                        bestAgentCapacity.cap[requiredType].available--; // Decrement virtual capacity
+                                    } else {
+                                        console.log(`No agent found with capacity for job: $${job.price} (${job.isGrouped ? 'Grouped' : 'Single'})`);
+                                    }
                                 }
 
-                                console.log(`Attempting to accept ${jobsToProcess.length} jobs (Limit: ${CONFIG.maxConcurrentTabs})...`);
-                                while (jobsToProcess.length > 0) {
-                                    const batch = jobsToProcess.splice(0, CONFIG.maxConcurrentTabs);
-                                    const results = await Promise.all(batch.map(job => acceptJob(browser, job, contextOptions)));
-                                    const successCount = results.filter(r => r).length;
-                                    if (successCount > 0) console.log(`Batch complete. ${successCount} jobs secured.`);
+                                // D. Execute Parallel Job Processing
+                                const jobsToProcessCount = Object.values(agentQueues).flat().length;
+                                if (jobsToProcessCount > 0) {
+                                    const msg = `🚨 Found ${jobsToProcessCount} Jobs! Attempting to accept with swarm...`;
+                                    console.log(msg);
+
+                                    try {
+                                        const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                                        await sendDualAlert(msg, msg, screenshotBuffer);
+                                    } catch (e) {
+                                        console.error('Pre-alert error (continuing logic):', e.message);
+                                    }
+
+                                    await Promise.all(agents.map(async (agent) => {
+                                        const queue = agentQueues[agent.id];
+                                        if (queue && queue.length > 0) {
+                                            console.log(`[Account ${agent.id}] Processing ${queue.length} jobs...`);
+                                            // Process jobs in batches for each agent
+                                            while (queue.length > 0) {
+                                                const batch = queue.splice(0, CONFIG.maxConcurrentTabs);
+                                                await Promise.all(batch.map(j => processJob(agent, j)));
+                                            }
+                                        }
+                                    }));
+                                } else {
+                                    console.log('No jobs matched criteria or could be dispatched to agents with capacity.');
+                                    const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                                    await sendDualAlert(`🚨 Jobs Found but ignored.`, `Jobs available (ignored)`, screenshotBuffer);
                                 }
                             } else {
                                 console.log('No jobs matched criteria.');
-                                const screenshotBuffer = await page.screenshot({ fullPage: true });
+                                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                                 await sendDualAlert(`🚨 Jobs Found but ignored.`, `Jobs available (ignored)`, screenshotBuffer);
                             }
                         }
@@ -414,24 +480,24 @@ async function run() {
                 }
 
             } catch (innerError) {
-                console.error(`⚠️ loop error: ${innerError.message}`);
-                if (!IS_CI) throw innerError;
+                console.error(`⚠️ Loop error: ${innerError.message}`);
+                if (!IS_CI) throw innerError; // Re-throw fatal errors in local mode
             }
 
             if (IS_CI) {
                 if (Date.now() - startTime >= LOOP_DURATION) keepRunning = false;
-                // REMOVED CHECK_INTERVAL WAIT for fast looping
-                // We depend on networkidle in reload() to pace us roughly.
             } else {
-                keepRunning = false;
+                keepRunning = false; // Local mode runs once
             }
         }
     } catch (error) {
-        console.error('Fatal:', error);
-        await sendDualAlert(`⚠️ Checker Error: ${error.message}`);
+        console.error('Fatal error in main run loop:', error);
+        await sendDualAlert(`⚠️ Checker Error: ${error.message}`, `Checker Error: ${error.message}`);
         process.exit(1);
     } finally {
+        console.log('Closing browser...');
         await browser.close();
+        console.log('Browser closed.');
     }
 }
 
