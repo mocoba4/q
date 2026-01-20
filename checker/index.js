@@ -299,7 +299,7 @@ async function run() {
     // --- MAIN LOOP ---
     const Agent1 = agents[0]; // The Spotter
     const LOOP_DURATION = 6 * 60 * 60 * 1000;
-    const MIN_CYCLE_DURATION = 20 * 1000;
+    const MIN_CYCLE_DURATION = 10 * 1000;
     const startTime = Date.now();
     let iterations = 0;
     let keepRunning = true;
