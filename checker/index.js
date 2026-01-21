@@ -259,8 +259,10 @@ async function run() {
         const context = await browser.newContext(ctxOpts);
 
         // OPTION 1: Resource Blocking (Images, Fonts, Media) - Speed Boost 🚀
-        // Note: We keep CSS/JS to ensure selectors work correctly.
-        await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,eot,mp4,webm,ico}', route => route.abort());
+        // Modified: Only block for Workers (Agents 2+). Agent 1 needs images for Screenshots.
+        if (acc.id !== 1) {
+            await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,eot,mp4,webm,ico}', route => route.abort());
+        }
 
         const page = await context.newPage();
 
