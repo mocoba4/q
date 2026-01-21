@@ -257,7 +257,29 @@ async function run() {
         if (fs.existsSync(sessionPath)) ctxOpts.storageState = sessionPath;
 
         const context = await browser.newContext(ctxOpts);
+
+        // OPTION 1: Resource Blocking (Images, Fonts, Media) - Speed Boost 🚀
+        // Note: We keep CSS/JS to ensure selectors work correctly.
+        await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,eot,mp4,webm,ico}', route => route.abort());
+
         const page = await context.newPage();
+
+        // OPTION 2 PREP: JSON Logger (The Sniper Spy) 🕵️‍♂️
+        if (acc.id === 1) {
+            page.on('response', async response => {
+                try {
+                    if (response.url().includes('available-requests') && response.status() === 200) {
+                        const body = await response.text();
+                        // Only log if it contains potential job indicators to avoid empty spam
+                        if (body.includes('"uid"') || body.includes('"price"') || body.includes('"id"')) {
+                            console.log('\n🔍 --- SNIPER DATA CAPTURED ---');
+                            console.log(body);
+                            console.log('------------------------------\n');
+                        }
+                    }
+                } catch (e) { /* ignore spy errors */ }
+            });
+        }
 
         // Login Flow
         await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
