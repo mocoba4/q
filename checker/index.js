@@ -327,6 +327,50 @@ async function run() {
     let iterations = 0;
     let keepRunning = true;
 
+    // Sniper Storage
+    let lastSniperJobs = [];
+
+    // --- SNIPER ENGINE (Option 2) ---
+    // We listen to the network to catch jobs BEFORE the browser even finishes drawing them.
+    Agent1.page.on('response', async response => {
+        const url = response.url();
+        if (url.includes('available-requests') && response.status() === 200) {
+            try {
+                const json = await response.json();
+                const rawJobs = json.data || [];
+
+                const parsed = rawJobs.map(item => {
+                    const attr = item.attributes || {};
+                    const priceInfo = attr.pricingInformation || {};
+                    const isGrouped = attr.partOfGroupOfRequests === true;
+
+                    // The site uses a specific URL structure: .../modeling-requests/ID/brief
+                    // CONFIG.url is usually the full modeling-requests URL
+                    const jobUrl = `${CONFIG.url}/${item.id}/brief`;
+
+                    return {
+                        id: item.id,
+                        url: jobUrl,
+                        price: priceInfo.price || parseFloat(attr.compensation) || 0,
+                        isGrouped: isGrouped,
+                        variations: isGrouped ? (attr.groupData?.size || 1) : 1,
+                        pricePerUnit: isGrouped ? (priceInfo.price / (attr.groupData?.size || 1)) : priceInfo.price
+                    };
+                });
+
+                lastSniperJobs = parsed;
+                if (parsed.length > 0) {
+                    console.log(`[Sniper] 🎯 Captured ${parsed.length} jobs via API.`);
+                }
+            } catch (e) {
+                // Ignore parse errors if body is not JSON or empty
+            }
+        } else if (url.includes('available-requests') && (response.status() === 403 || response.status() === 429)) {
+            console.error(`\n🚨 [Sniper Alert] POTENTIAL SOFT BAN detected (HTTP ${response.status()}).`);
+            console.error('The server is blocking our check requests. Recommend stopping or increasing wait time.\n');
+        }
+    });
+
     try {
         while (keepRunning) {
             const cycleStart = Date.now();
@@ -395,41 +439,16 @@ async function run() {
                                 screenshotBuffer
                             );
                         } else {
-                            // B. Scrape from Agent 1 (Spotter)
-                            console.log('[Agent 1] Scraping Jobs...');
-                            const jobButtons = await Agent1.page.locator('a:has-text("Open requirements"), button:has-text("Open requirements")').all();
+                            // Use Sniper Data if available
+                            const availableJobs = lastSniperJobs;
 
-                            let availableJobs = [];
-                            for (const btn of jobButtons) {
-                                const url = await btn.getAttribute('href');
-                                if (!url) continue;
-
-                                const card = btn.locator('xpath=./ancestor::div[contains(@class, "row") or contains(@class, "Card")]').first();
-                                let cardText = '';
-                                if (await card.count() > 0) {
-                                    cardText = await card.innerText();
-                                } else {
-                                    // Fallback for different DOM structures
-                                    cardText = await btn.locator('..').locator('..').innerText();
-                                }
-
-                                const priceMatch = cardText.match(/\$(\d+(\.\d+)?)/);
-                                const price = priceMatch ? parseFloat(priceMatch[1]) : 0;
-                                const varMatch = cardText.match(/(\d+)\s+variations/i);
-                                const isGrouped = !!varMatch;
-                                const variationCount = isGrouped ? parseInt(varMatch[1], 10) : 1;
-                                const fullUrl = url.startsWith('http') ? url : new URL(url, CONFIG.url).toString();
-
-                                availableJobs.push({
-                                    url: fullUrl,
-                                    price: price,
-                                    isGrouped: isGrouped,
-                                    variations: variationCount,
-                                    pricePerUnit: isGrouped ? (price / variationCount) : price
-                                });
+                            if (availableJobs.length === 0) {
+                                console.log('⚠️ Logic triggered but Sniper found 0 jobs in API. (Possible race condition or UI weirdness). skipping.');
+                                await Agent1.page.waitForTimeout(2000);
+                                continue;
                             }
 
-                            console.log(`[Agent 1] Found ${availableJobs.length} potential jobs.`);
+                            console.log(`🚨 [Sniper] ${availableJobs.length} JOBS DETECTED! SWARM ATTACK!`);
 
                             const singleJobs = availableJobs.filter(j => !j.isGrouped && j.price >= CONFIG.minPriceSingle).sort((a, b) => b.price - a.price);
                             const groupedJobs = availableJobs.filter(j => j.isGrouped && j.pricePerUnit >= CONFIG.minPriceVariation).sort((a, b) => b.price - a.price);
