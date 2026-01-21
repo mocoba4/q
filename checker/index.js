@@ -163,6 +163,9 @@ async function processJob(agent, job) {
         // Create a new page within the agent's context for each job
         page = await agent.context.newPage();
 
+        // Speed Optimization: Block images/fonts on the specific TASK page for all agents (including Agent 1)
+        await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,eot,mp4,webm,ico}', route => route.abort());
+
         // Hack to bypass GitHub Secret masking (insert space after https://)
         const displayUrl = job.url.replace('https://', 'https:// ');
         console.log(`[Account ${agent.id}] Handling Job: ${displayUrl}`);
