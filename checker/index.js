@@ -319,6 +319,15 @@ async function run() {
         agents.push({ id: acc.id, page, context, sessionPath, browser });
     }
 
+    // --- INITIAL CAPACITY SCAN ---
+    console.log('🔄 Performing initial capacity scan...');
+    const capacityCache = {};
+    await Promise.all(agents.map(async (agent) => {
+        const cap = await getCapacity(agent.page);
+        capacityCache[agent.id] = cap;
+        console.log(`[Account ${agent.id}] Init Capacity: Single ${cap.single.available} | Grouped ${cap.grouped.available}`);
+    }));
+
     // --- MAIN LOOP ---
     const Agent1 = agents[0]; // The Spotter
     const LOOP_DURATION = 6 * 60 * 60 * 1000;
@@ -419,27 +428,20 @@ async function run() {
                     } else {
                         console.log('🚨 JOBS FOUND! SWARM ATTACK!');
 
-                        // A. Parallel Capacity Scan for all active agents
-                        const capacities = await Promise.all(agents.map(async (a) => {
-                            const cap = await getCapacity(a.page);
-                            console.log(`[Account ${a.id}] Capacity: Single ${cap.single.available} | Grouped ${cap.grouped.available}`);
-                            return { id: a.id, cap };
-                        }));
-
-                        // Check if any agent has capacity
-                        const totalAvailableSingle = capacities.reduce((sum, c) => sum + c.cap.single.available, 0);
-                        const totalAvailableGrouped = capacities.reduce((sum, c) => sum + c.cap.grouped.available, 0);
+                        // Use Stored Capacity Cache (0ms delay)
+                        const totalAvailableSingle = Object.values(capacityCache).reduce((sum, c) => sum + c.single.available, 0);
+                        const totalAvailableGrouped = Object.values(capacityCache).reduce((sum, c) => sum + c.grouped.available, 0);
 
                         if (totalAvailableSingle === 0 && totalAvailableGrouped === 0) {
-                            console.log('⚠️ All agents have FULL capacity. Sending alert only.');
+                            console.log('⚠️ All agents have FULL capacity (Cache). Sending alert only.');
                             const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                            await sendDualAlert(
+                            sendDualAlert(
                                 `🚨 Jobs Found but ALL Agents at FULL Capacity!`,
                                 `Jobs found (All Agents Full)`,
                                 screenshotBuffer
-                            );
+                            ).catch(e => console.error('BG Alert Error:', e.message));
                         } else {
-                            // Use Sniper Data if available
+                            // Use Sniper Data if available (0ms delay)
                             const availableJobs = lastSniperJobs;
 
                             if (availableJobs.length === 0) {
@@ -456,63 +458,68 @@ async function run() {
                             const validJobs = [...singleJobs, ...groupedJobs]; // Combine for dispatch
 
                             if (validJobs.length > 0) {
-                                // C. Dispatch Jobs to Agents
+                                // C. Dispatch Jobs to Agents (using Cache)
                                 const agentQueues = {}; // { 1: [job1], 2: [job2] }
                                 agents.forEach(a => agentQueues[a.id] = []);
 
-                                // Create a mutable copy of capacities for dispatch logic
-                                const currentCapacities = capacities.map(c => ({
-                                    id: c.id,
-                                    cap: {
-                                        single: { ...c.cap.single },
-                                        grouped: { ...c.cap.grouped }
-                                    }
-                                }));
+                                // Create a mutable copy of capacityCache for dispatch logic
+                                const currentCapacities = JSON.parse(JSON.stringify(capacityCache));
 
                                 for (const job of validJobs) {
                                     const requiredType = job.isGrouped ? 'grouped' : 'single';
 
-                                    // Find first agent with room for this job type
-                                    const bestAgentCapacity = currentCapacities.find(c => c.cap[requiredType].available > 0);
+                                    // Find first agent with room in cached capacity
+                                    const bestAgentId = Object.keys(currentCapacities).find(id => currentCapacities[id][requiredType].available > 0);
 
-                                    if (bestAgentCapacity) {
-                                        agentQueues[bestAgentCapacity.id].push(job);
-                                        bestAgentCapacity.cap[requiredType].available--; // Decrement virtual capacity
+                                    if (bestAgentId) {
+                                        agentQueues[bestAgentId].push(job);
+                                        currentCapacities[bestAgentId][requiredType].available--;
                                     } else {
-                                        console.log(`No agent found with capacity for job: $${job.price} (${job.isGrouped ? 'Grouped' : 'Single'})`);
+                                        console.log(`No agent found with (cached) capacity for job: $${job.price}`);
                                     }
                                 }
 
-                                // D. Execute Parallel Job Processing
+                                // D. Execute Parallel Job Processing (Ultra-Aggressive: NO SCREENSHOT YET)
                                 const jobsToProcessCount = Object.values(agentQueues).flat().length;
                                 if (jobsToProcessCount > 0) {
-                                    const msg = `🚨 Found ${jobsToProcessCount} Jobs! Attempting to accept with swarm...`;
-                                    console.log(msg);
-
-                                    try {
-                                        // Capture screenshot FIRST (blocking, but fast)
-                                        const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                                        // Send Alert in BACKGROUND (non-blocking)
-                                        sendDualAlert(msg, msg, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
-                                    } catch (e) {
-                                        console.error('Pre-alert screenshot error (continuing logic):', e.message);
-                                    }
+                                    console.log(`🚀 Dispatching ${jobsToProcessCount} jobs to swarm IMMEDIATELY...`);
 
                                     await Promise.all(agents.map(async (agent) => {
                                         const queue = agentQueues[agent.id];
                                         if (queue && queue.length > 0) {
                                             console.log(`[Account ${agent.id}] Processing ${queue.length} jobs...`);
-                                            // Process jobs in batches for each agent
                                             while (queue.length > 0) {
                                                 const batch = queue.splice(0, CONFIG.maxConcurrentTabs);
                                                 await Promise.all(batch.map(j => processJob(agent, j)));
                                             }
                                         }
                                     }));
+
+                                    console.log('Swarm processing done. Capturing aftermath and updating capacities...');
+
+                                    // E. Post-Processing (Agent 1 returns to monitor)
+                                    try {
+                                        if (!Agent1.page.url().includes(CONFIG.url)) {
+                                            await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                                        } else {
+                                            await Agent1.page.reload({ waitUntil: 'networkidle' });
+                                        }
+
+                                        const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                                        const alertMsg = `🎯 Swarm complete! Found ${jobsToProcessCount} jobs. Check logs for acceptance status.`;
+                                        sendDualAlert(alertMsg, alertMsg, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
+
+                                        // RE-SCAN ALL CAPACITIES (Update memory for next cycle)
+                                        console.log('🔄 Re-scanning capacities after swarm...');
+                                        await Promise.all(agents.map(async (agent) => {
+                                            const cap = await getCapacity(agent.page);
+                                            capacityCache[agent.id] = cap;
+                                        }));
+                                    } catch (e) {
+                                        console.error('Post-processing error:', e.message);
+                                    }
                                 } else {
-                                    console.log('No jobs matched criteria or could be dispatched to agents with capacity.');
-                                    const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                                    await sendDualAlert(`🚨 Jobs Found but ignored.`, `Jobs available (ignored)`, screenshotBuffer);
+                                    console.log('No jobs matched criteria or could be dispatched (Cache empty).');
                                 }
                             } else {
                                 console.log('No jobs matched criteria.');
