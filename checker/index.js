@@ -497,23 +497,26 @@ async function run() {
 
                                     console.log('Swarm processing done. Capturing aftermath and updating capacities...');
 
-                                    // E. Post-Processing (Refresh all agents and re-scan capacity)
+                                    // E. Post-Processing (Screenshot AFTER the attack, then refresh)
                                     try {
-                                        console.log('🔄 Refreshing all agents for capacity update...');
-                                        await Promise.all(agents.map(async (agent) => {
-                                            if (!agent.page.url().includes(CONFIG.url)) {
-                                                await agent.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
-                                            } else {
-                                                await agent.page.reload({ waitUntil: 'networkidle' });
-                                            }
-                                        }));
+                                        console.log('🔄 Returning Agent 1 to monitor for results...');
+                                        if (!Agent1.page.url().includes(CONFIG.url)) {
+                                            await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                                        }
 
+                                        // 3. Take Screenshot BEFORE the "Deep Refresh"
                                         const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                                        const alertMsg = `🎯 Swarm complete! Found ${jobsToProcessCount} jobs. Check logs for acceptance status.`;
+                                        const alertMsg = `🎯 Swarm processing complete!`;
                                         sendDualAlert(alertMsg, alertMsg, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
 
+                                        // 2. Refresh ALL accounts (Deep Refresh for capacity)
+                                        console.log('🔄 Deep Refreshing all agents for capacity scan...');
+                                        await Promise.all(agents.map(async (agent) => {
+                                            await agent.page.reload({ waitUntil: 'networkidle' });
+                                        }));
+
                                         // RE-SCAN ALL CAPACITIES (Update memory for next cycle)
-                                        console.log('Update memory with fresh capacities...');
+                                        console.log('Updating memory with fresh capacities...');
                                         await Promise.all(agents.map(async (agent) => {
                                             const cap = await getCapacity(agent.page);
                                             capacityCache[agent.id] = cap;
