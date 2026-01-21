@@ -183,9 +183,16 @@ async function processJob(agent, job) {
 
             console.log(`[Account ${agent.id}] Identifying Accept button (Attempt ${i + 1})...`);
             acceptBtn = page.getByText('Accept task', { exact: true }).or(page.locator('button:has-text("Accept task")'));
-
             if (await acceptBtn.count() > 0) break;
-            else acceptBtn = null;
+
+            // Early Exit Optimization: Check if "Too Late" message appeared
+            const tooLateInfo = page.getByText('Oops, looks like you are too late', { exact: false });
+            if (await tooLateInfo.count() > 0) {
+                acceptBtn = null; // Ensure null so we skip
+                console.log(`[Account ${agent.id}] FAILED: Job already taken (Early Exit on Attempt ${i + 1})`);
+                return false;
+            }
+            acceptBtn = null;
         }
 
         if (acceptBtn) {
@@ -200,13 +207,21 @@ async function processJob(agent, job) {
                 .or(page.getByText('Yes', { exact: true }));
 
             if (await confirmBtn.count() > 0) {
-                await confirmBtn.first().click();
                 console.log(`[Account ${agent.id}] Clicked Modal Confirmation. Verifying...`);
 
                 // Verification
                 try {
-                    await page.waitForURL('**/my-requests/**', { timeout: 10000 });
-                    if (page.url().includes('/my-requests/')) {
+                    const startUrl = page.url();
+                    // RELAXED VERIFICATION: Wait for ANY URL change or "Cancel task" button
+                    await Promise.race([
+                        page.waitForURL(url => url !== startUrl, { timeout: 10000 }),
+                        page.waitForSelector('button:has-text("Cancel task")', { timeout: 10000 })
+                    ]);
+
+                    const endUrl = page.url();
+                    const cancelBtn = page.locator('button:has-text("Cancel task")');
+
+                    if (endUrl !== startUrl || (await cancelBtn.count() > 0)) {
                         const screenshot = await page.screenshot({ fullPage: true });
                         // Unmasked pricing in logs for verification
                         const rawPrice = String(job.price).split('').join(' ');
