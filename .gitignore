@@ -3,3 +3,17 @@ node_modules/
 .DS_Store
 checker/session.json
 Instruction file.txt
+
+# Analysis files
+Analayze
+a
+analyze_log*.py
+audit_jobs.py
+correct_job_list.py
+exhaustive_scan.py
+final_extraction.py
+*.md
+!README.md
+!walkthrough.md
+!task.md
+!implementation_plan.md
