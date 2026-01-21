@@ -441,11 +441,10 @@ async function run() {
                     await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
                 }
 
-                // Only take screenshot if we actually DID something meaningful, or if in checkOnly mode
-                if (CONFIG.checkOnly) {
-                    const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                    sendDualAlert(`🎯 Swarm Complete!`, `Processing complete.`, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
-                }
+                // Always take a screenshot of the swarm event for the user's peace of mind
+                // This happens in parallel with workers, so it doesn't slow them down.
+                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                sendDualAlert(`🎯 Swarm Complete!`, `Processing complete.`, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
 
                 console.log('🔄 Deep Refreshing for capacity scan...');
                 await Promise.all(agents.map(async (agent) => {
