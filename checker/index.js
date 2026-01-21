@@ -403,10 +403,13 @@ async function run() {
 
         for (const job of jobsToAssign) {
             const requiredType = job.isGrouped ? 'grouped' : 'single';
-            const bestAgentId = Object.keys(currentCapacities).find(id => currentCapacities[id][requiredType].available > 0);
-            if (bestAgentId) {
-                agentQueues[bestAgentId].push(job);
-                currentCapacities[bestAgentId][requiredType].available--;
+            // Explicitly iterate agents in order (1, 2, 3...) to ensure Greedy Assignment
+            // Agent 1 gets first dibs on the highest price job, then the next, until full.
+            const bestAgent = agents.find(a => currentCapacities[a.id][requiredType].available > 0);
+
+            if (bestAgent) {
+                agentQueues[bestAgent.id].push(job);
+                currentCapacities[bestAgent.id][requiredType].available--;
             }
         }
 
