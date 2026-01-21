@@ -17,7 +17,8 @@ const CONFIG = {
     minPriceSingle: parseFloat(process.env.MIN_PRICE_SINGLE || '25'),
     minPriceVariation: parseFloat(process.env.MIN_PRICE_VARIATION || '6'),
     maxConcurrentTabs: 5,
-    checkOnly: /^(1|true|on|yes)$/i.test(process.env.CHECK_ONLY || '')
+    checkOnly: /^(1|true|on|yes)$/i.test(process.env.CHECK_ONLY || ''),
+    checkInterval: parseInt(process.env.CHECK_INTERVAL || '10', 10)
 };
 
 // --- UPDATED CONFIG FOR MULTI-ACCOUNT ---
@@ -320,7 +321,7 @@ async function run() {
     // --- MAIN LOOP ---
     const Agent1 = agents[0]; // The Spotter
     const LOOP_DURATION = 6 * 60 * 60 * 1000;
-    const MIN_CYCLE_DURATION = 10 * 1000; // Reduced to 10s as per user request
+    const MIN_CYCLE_DURATION = CONFIG.checkInterval * 1000;
     const startTime = Date.now();
     let iterations = 0;
     let keepRunning = true;
