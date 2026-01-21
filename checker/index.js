@@ -174,11 +174,21 @@ async function processJob(agent, job) {
         // Agent 1 clicks, others go direct
         await page.goto(job.url, { waitUntil: 'domcontentloaded' });
 
-        // Instant Identify & Click (No wait, No scroll)
-        console.log(`[Account ${agent.id}] Identifying Accept button...`);
+        // Triple-Retry Logic for Accept Button
+        let acceptBtn = null;
+        const attempts = [0, 500, 1000]; // 0ms, 500ms, 1000ms waits
 
-        const acceptBtn = page.getByText('Accept task', { exact: true }).or(page.locator('button:has-text("Accept task")'));
-        if (await acceptBtn.count() > 0) {
+        for (let i = 0; i < attempts.length; i++) {
+            if (attempts[i] > 0) await page.waitForTimeout(attempts[i]);
+
+            console.log(`[Account ${agent.id}] Identifying Accept button (Attempt ${i + 1})...`);
+            acceptBtn = page.getByText('Accept task', { exact: true }).or(page.locator('button:has-text("Accept task")'));
+
+            if (await acceptBtn.count() > 0) break;
+            else acceptBtn = null;
+        }
+
+        if (acceptBtn) {
             await acceptBtn.first().click();
             console.log(`[Account ${agent.id}] Clicked Accept Task...`);
 
@@ -198,7 +208,10 @@ async function processJob(agent, job) {
                     await page.waitForURL('**/my-requests/**', { timeout: 10000 });
                     if (page.url().includes('/my-requests/')) {
                         const screenshot = await page.screenshot({ fullPage: true });
+                        // Unmasked pricing in logs for verification
+                        const rawPrice = String(job.price).split('').join(' ');
                         const msg = `✅ Account ${agent.id} SECURED Job!\nPrice: $${job.price}\nType: ${job.isGrouped ? 'Grouped' : 'Single'}`;
+                        console.log(`[Account ${agent.id}] SUCCESS! Price: [ ${rawPrice} ]`);
                         await sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot);
                         return true;
                     }
@@ -207,7 +220,14 @@ async function processJob(agent, job) {
                 console.log(`[Account ${agent.id}] No confirmation modal found? (Or auto-accepted?)`);
             }
         } else {
-            console.log(`[Account ${agent.id}] Accept button not found.`);
+            console.log(`[Account ${agent.id}] Accept button not found after ${attempts.length} attempts.`);
+            // "Too Late" Detection
+            const tooLate = page.getByText('Oops, looks like you are too late', { exact: false });
+            if (await tooLate.count() > 0) {
+                console.log(`[Account ${agent.id}] FAILED: Job already taken by another user ("Too Late" message found).`);
+            } else {
+                console.log(`[Account ${agent.id}] FAILED: Button missing and no "Too Late" message found. (Site lag or layout change?)`);
+            }
         }
     } catch (e) {
         console.error(`[Account ${agent.id}] Error processing job ${job.url}: ${e.message}`);
@@ -263,9 +283,9 @@ async function run() {
         if (acc.id === 1) {
             page.on('response', async response => {
                 try {
+                    // OPTIMIZED SPY: Only log main jobs list, skip product detail noise
                     if (response.url().includes('available-requests') && response.status() === 200) {
                         const body = await response.text();
-                        // Only log if it contains potential job indicators to avoid empty spam
                         if (body.includes('"uid"') || body.includes('"price"') || body.includes('"id"')) {
                             console.log('\n🔍 --- SNIPER DATA CAPTURED ---');
                             console.log(body);
@@ -427,17 +447,20 @@ async function run() {
                     const priceInfo = attr.pricingInformation || {};
                     const isGrouped = attr.partOfGroupOfRequests === true;
 
-                    // The site uses a specific URL structure: .../modeling-requests/ID/brief
-                    // CONFIG.url is usually the full modeling-requests URL
                     const jobUrl = `${CONFIG.url}/${item.id}/brief`;
+                    const price = priceInfo.price || parseFloat(attr.compensation) || 0;
+
+                    // Unmasked pricing in logs for Sniper verification
+                    const rawPriceLog = String(price).split('').join(' ');
+                    console.log(`[Sniper] Detected Job ${item.id} | Price: [ ${rawPriceLog} ]`);
 
                     return {
                         id: item.id,
                         url: jobUrl,
-                        price: priceInfo.price || parseFloat(attr.compensation) || 0,
+                        price: price,
                         isGrouped: isGrouped,
                         variations: isGrouped ? (attr.groupData?.size || 1) : 1,
-                        pricePerUnit: isGrouped ? (priceInfo.price / (attr.groupData?.size || 1)) : priceInfo.price
+                        pricePerUnit: isGrouped ? (price / (attr.groupData?.size || 1)) : price
                     };
                 });
 
