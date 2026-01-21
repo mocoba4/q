@@ -324,6 +324,90 @@ async function run() {
     const startTime = Date.now();
     let iterations = 0;
     let keepRunning = true;
+    let isDispatching = false; // The Lock 🔒
+
+    // Helper: The Swarm Trigger
+    async function triggerSwarm(validJobs) {
+        if (isDispatching) return; // Prevent double firing
+        isDispatching = true;
+        console.log(`\n🚀 [EVENT TRIGGER] Dispatching ${validJobs.length} jobs to swarm IMMEDIATELY...`);
+
+        // A. Filter & Dispatch (using Cache)
+        const singleJobs = validJobs.filter(j => !j.isGrouped && j.price >= CONFIG.minPriceSingle).sort((a, b) => b.price - a.price);
+        const groupedJobs = validJobs.filter(j => j.isGrouped && j.pricePerUnit >= CONFIG.minPriceVariation).sort((a, b) => b.price - a.price);
+        const jobsToAssign = [...singleJobs, ...groupedJobs];
+
+        if (jobsToAssign.length === 0) {
+            console.log('[Event] No jobs matched price criteria.');
+            isDispatching = false;
+            return;
+        }
+
+        const agentQueues = {};
+        agents.forEach(a => agentQueues[a.id] = []);
+        const currentCapacities = JSON.parse(JSON.stringify(capacityCache));
+
+        for (const job of jobsToAssign) {
+            const requiredType = job.isGrouped ? 'grouped' : 'single';
+            const bestAgentId = Object.keys(currentCapacities).find(id => currentCapacities[id][requiredType].available > 0);
+            if (bestAgentId) {
+                agentQueues[bestAgentId].push(job);
+                currentCapacities[bestAgentId][requiredType].available--;
+            }
+        }
+
+        const totalJobs = Object.values(agentQueues).flat().length;
+        if (totalJobs > 0) {
+            // Check Only Mode Guard
+            if (CONFIG.checkOnly) {
+                console.log('🛡️ [Event] Check Only Mode. Sending notification.');
+                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`, screenshotBuffer);
+                isDispatching = false;
+                return;
+            }
+
+            // --- THE ATTACK ---
+            await Promise.all(agents.map(async (agent) => {
+                const queue = agentQueues[agent.id];
+                if (queue && queue.length > 0) {
+                    console.log(`[Account ${agent.id}] Parallel attack on ${queue.length} jobs...`);
+                    while (queue.length > 0) {
+                        const batch = queue.splice(0, CONFIG.maxConcurrentTabs);
+                        await Promise.all(batch.map(j => processJob(agent, j)));
+                    }
+                }
+            }));
+
+            // --- POST-PROCESSING ---
+            try {
+                console.log('🔄 Swarm done. Returning Agent 1 to monitor for results...');
+                if (!Agent1.page.url().includes(CONFIG.url)) {
+                    await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                }
+                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                sendDualAlert(`🎯 Swarm Complete!`, `Processing complete.`, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
+
+                console.log('🔄 Deep Refreshing for capacity scan...');
+                await Promise.all(agents.map(async (agent) => {
+                    await agent.page.reload({ waitUntil: 'networkidle' });
+                }));
+
+                console.log('Updating memory with fresh capacities...');
+                await Promise.all(agents.map(async (agent) => {
+                    const cap = await getCapacity(agent.page);
+                    capacityCache[agent.id] = cap;
+                    console.log(`[Account ${agent.id}] Capacity updated: ${cap.single.available}/${cap.grouped.available}`);
+                }));
+            } catch (e) {
+                console.error('Post-processing error:', e.message);
+            }
+        } else {
+            console.log('[Event] No agents have capacity for these jobs.');
+        }
+
+        isDispatching = false;
+    }
 
     // Sniper Storage
     let lastSniperJobs = [];
@@ -359,6 +443,8 @@ async function run() {
                 lastSniperJobs = parsed;
                 if (parsed.length > 0) {
                     console.log(`[Sniper] 🎯 Captured ${parsed.length} jobs via API.`);
+                    // TRIGGER SWARM IMMEDIATELY
+                    triggerSwarm(parsed).catch(err => console.error('Swarm Trigger Error:', err.message));
                 }
             } catch (e) {
                 // Ignore parse errors if body is not JSON or empty
@@ -405,125 +491,17 @@ async function run() {
                     console.log(`✅ Phrase FOUND (No jobs). Waiting ${(waitTime / 1000).toFixed(1)}s to complete 20s cycle...`);
                     await Agent1.page.waitForTimeout(waitTime);
                 } else {
-                    console.log('❌ Phrase NOT FOUND! Tasks likely available! Starting Logic IMMEDIATELY.');
-
-                    // --- AUTO-ACCEPT LOGIC ---
-                    if (CONFIG.checkOnly) {
-                        console.log('🛡️ Check Only Mode active. Sending Alert (No Actions Taken).');
-                        const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                        const telegramMsg = `🚨 Task Alert (Check Only)\nTasks available, but Auto-Accept is DISABLED.\nTime: ${new Date().toUTCString()}`;
-                        const ntfyMsg = `Tasks available! (Auto-Accept Disabled)`;
-                        await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
+                    // Logic already triggered by JSON or phrase is missing (loading?)
+                    if (isDispatching) {
+                        console.log('⏳ Swarm attack currently in progress (Event-Triggered). Waiting for completion...');
+                        while (isDispatching) await Agent1.page.waitForTimeout(500);
                     } else {
-                        console.log('🚨 JOBS FOUND! SWARM ATTACK!');
-
-                        // Use Stored Capacity Cache (0ms delay)
-                        const totalAvailableSingle = Object.values(capacityCache).reduce((sum, c) => sum + c.single.available, 0);
-                        const totalAvailableGrouped = Object.values(capacityCache).reduce((sum, c) => sum + c.grouped.available, 0);
-
-                        if (totalAvailableSingle === 0 && totalAvailableGrouped === 0) {
-                            console.log('⚠️ All agents have FULL capacity (Cache). Sending alert only.');
-                            const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                            sendDualAlert(
-                                `🚨 Jobs Found but ALL Agents at FULL Capacity!`,
-                                `Jobs found (All Agents Full)`,
-                                screenshotBuffer
-                            ).catch(e => console.error('BG Alert Error:', e.message));
-                        } else {
-                            // Use Sniper Data if available (0ms delay)
-                            const availableJobs = lastSniperJobs;
-
-                            if (availableJobs.length === 0) {
-                                console.log('⚠️ Logic triggered but Sniper found 0 jobs in API. (Possible race condition or UI weirdness). skipping.');
-                                await Agent1.page.waitForTimeout(2000);
-                                continue;
-                            }
-
-                            console.log(`🚨 [Sniper] ${availableJobs.length} JOBS DETECTED! SWARM ATTACK!`);
-
-                            const singleJobs = availableJobs.filter(j => !j.isGrouped && j.price >= CONFIG.minPriceSingle).sort((a, b) => b.price - a.price);
-                            const groupedJobs = availableJobs.filter(j => j.isGrouped && j.pricePerUnit >= CONFIG.minPriceVariation).sort((a, b) => b.price - a.price);
-
-                            const validJobs = [...singleJobs, ...groupedJobs]; // Combine for dispatch
-
-                            if (validJobs.length > 0) {
-                                // C. Dispatch Jobs to Agents (using Cache)
-                                const agentQueues = {}; // { 1: [job1], 2: [job2] }
-                                agents.forEach(a => agentQueues[a.id] = []);
-
-                                // Create a mutable copy of capacityCache for dispatch logic
-                                const currentCapacities = JSON.parse(JSON.stringify(capacityCache));
-
-                                for (const job of validJobs) {
-                                    const requiredType = job.isGrouped ? 'grouped' : 'single';
-
-                                    // Find first agent with room in cached capacity
-                                    const bestAgentId = Object.keys(currentCapacities).find(id => currentCapacities[id][requiredType].available > 0);
-
-                                    if (bestAgentId) {
-                                        agentQueues[bestAgentId].push(job);
-                                        currentCapacities[bestAgentId][requiredType].available--;
-                                    } else {
-                                        console.log(`No agent found with (cached) capacity for job: $${job.price}`);
-                                    }
-                                }
-
-                                // D. Execute Parallel Job Processing (Ultra-Aggressive: NO SCREENSHOT YET)
-                                const jobsToProcessCount = Object.values(agentQueues).flat().length;
-                                if (jobsToProcessCount > 0) {
-                                    console.log(`🚀 Dispatching ${jobsToProcessCount} jobs to swarm IMMEDIATELY...`);
-
-                                    await Promise.all(agents.map(async (agent) => {
-                                        const queue = agentQueues[agent.id];
-                                        if (queue && queue.length > 0) {
-                                            console.log(`[Account ${agent.id}] Processing ${queue.length} jobs...`);
-                                            while (queue.length > 0) {
-                                                const batch = queue.splice(0, CONFIG.maxConcurrentTabs);
-                                                await Promise.all(batch.map(j => processJob(agent, j)));
-                                            }
-                                        }
-                                    }));
-
-                                    console.log('Swarm processing done. Capturing aftermath and updating capacities...');
-
-                                    // E. Post-Processing (Screenshot AFTER the attack, then refresh)
-                                    try {
-                                        console.log('🔄 Returning Agent 1 to monitor for results...');
-                                        if (!Agent1.page.url().includes(CONFIG.url)) {
-                                            await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
-                                        }
-
-                                        // 3. Take Screenshot BEFORE the "Deep Refresh"
-                                        const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                                        const alertMsg = `🎯 Swarm processing complete!`;
-                                        sendDualAlert(alertMsg, alertMsg, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
-
-                                        // 2. Refresh ALL accounts (Deep Refresh for capacity)
-                                        console.log('🔄 Deep Refreshing all agents for capacity scan...');
-                                        await Promise.all(agents.map(async (agent) => {
-                                            await agent.page.reload({ waitUntil: 'networkidle' });
-                                        }));
-
-                                        // RE-SCAN ALL CAPACITIES (Update memory for next cycle)
-                                        console.log('Updating memory with fresh capacities...');
-                                        await Promise.all(agents.map(async (agent) => {
-                                            const cap = await getCapacity(agent.page);
-                                            capacityCache[agent.id] = cap;
-                                            console.log(`[Account ${agent.id}] Capacity updated: ${cap.single.available}/${cap.grouped.available}`);
-                                        }));
-                                    } catch (e) {
-                                        console.error('Post-processing error:', e.message);
-                                    }
-                                } else {
-                                    console.log('No jobs matched criteria or could be dispatched (Cache empty).');
-                                }
-                            } else {
-                                console.log('No jobs matched criteria.');
-                                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                                await sendDualAlert(`🚨 Jobs Found but ignored.`, `Jobs available (ignored)`, screenshotBuffer);
-                            }
-                        }
+                        console.log('❌ Phrase NOT FOUND but no event triggered. (Server lag?). Waiting for next cycle.');
                     }
+
+                    const elapsed = Date.now() - cycleStart;
+                    const waitTime = Math.max(0, MIN_CYCLE_DURATION - elapsed);
+                    await Agent1.page.waitForTimeout(waitTime);
                 }
 
             } catch (innerError) {
