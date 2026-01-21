@@ -497,23 +497,27 @@ async function run() {
 
                                     console.log('Swarm processing done. Capturing aftermath and updating capacities...');
 
-                                    // E. Post-Processing (Agent 1 returns to monitor)
+                                    // E. Post-Processing (Refresh all agents and re-scan capacity)
                                     try {
-                                        if (!Agent1.page.url().includes(CONFIG.url)) {
-                                            await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
-                                        } else {
-                                            await Agent1.page.reload({ waitUntil: 'networkidle' });
-                                        }
+                                        console.log('🔄 Refreshing all agents for capacity update...');
+                                        await Promise.all(agents.map(async (agent) => {
+                                            if (!agent.page.url().includes(CONFIG.url)) {
+                                                await agent.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                                            } else {
+                                                await agent.page.reload({ waitUntil: 'networkidle' });
+                                            }
+                                        }));
 
                                         const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                                         const alertMsg = `🎯 Swarm complete! Found ${jobsToProcessCount} jobs. Check logs for acceptance status.`;
                                         sendDualAlert(alertMsg, alertMsg, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
 
                                         // RE-SCAN ALL CAPACITIES (Update memory for next cycle)
-                                        console.log('🔄 Re-scanning capacities after swarm...');
+                                        console.log('Update memory with fresh capacities...');
                                         await Promise.all(agents.map(async (agent) => {
                                             const cap = await getCapacity(agent.page);
                                             capacityCache[agent.id] = cap;
+                                            console.log(`[Account ${agent.id}] Capacity updated: ${cap.single.available}/${cap.grouped.available}`);
                                         }));
                                     } catch (e) {
                                         console.error('Post-processing error:', e.message);
