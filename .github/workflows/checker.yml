@@ -67,3 +67,4 @@ jobs:
         CG_PASSWORD4: ${{ secrets.CG_PASSWORD4 }}
         CG_EMAIL5: ${{ secrets.CG_EMAIL5 }}
         CG_PASSWORD5: ${{ secrets.CG_PASSWORD5 }}
+        CHECK_INTERVAL: ${{ secrets.CHECK_INTERVAL }}
