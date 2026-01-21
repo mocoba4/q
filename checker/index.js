@@ -490,10 +490,12 @@ async function run() {
                                     console.log(msg);
 
                                     try {
+                                        // Capture screenshot FIRST (blocking, but fast)
                                         const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                                        await sendDualAlert(msg, msg, screenshotBuffer);
+                                        // Send Alert in BACKGROUND (non-blocking)
+                                        sendDualAlert(msg, msg, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
                                     } catch (e) {
-                                        console.error('Pre-alert error (continuing logic):', e.message);
+                                        console.error('Pre-alert screenshot error (continuing logic):', e.message);
                                     }
 
                                     await Promise.all(agents.map(async (agent) => {
