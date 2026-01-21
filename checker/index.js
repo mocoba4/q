@@ -173,19 +173,8 @@ async function processJob(agent, job) {
         // Agent 1 clicks, others go direct
         await page.goto(job.url, { waitUntil: 'domcontentloaded' });
 
-        // 0.5s Wait (Total) - Fast Scroll
-        console.log(`[Account ${agent.id}] waiting 0.5s...`);
-        await Promise.all([
-            page.waitForTimeout(500),
-            (async () => {
-                try {
-                    await page.waitForTimeout(100);
-                    await page.mouse.wheel(0, 300);
-                    await page.waitForTimeout(100);
-                    await page.mouse.wheel(0, -300);
-                } catch (e) { /* Scroll errors are non-fatal */ }
-            })()
-        ]);
+        // Instant Identify & Click (No wait, No scroll)
+        console.log(`[Account ${agent.id}] Identifying Accept button...`);
 
         const acceptBtn = page.getByText('Accept task', { exact: true }).or(page.locator('button:has-text("Accept task")'));
         if (await acceptBtn.count() > 0) {
