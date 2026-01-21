@@ -435,15 +435,22 @@ async function run() {
 
             // --- POST-PROCESSING ---
             try {
-                console.log('🔄 Swarm done. Returning Agent 1 to monitor for results...');
+                console.log('🔄 Swarm done. Ensuring Spotter (Agent 1) is still active...');
                 if (!Agent1.page.url().includes(CONFIG.url)) {
+                    console.log('⚠️ [Agent 1] Spotter drifted! Returning to post...');
                     await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
                 }
-                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                sendDualAlert(`🎯 Swarm Complete!`, `Processing complete.`, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
+
+                // Only take screenshot if we actually DID something meaningful, or if in checkOnly mode
+                if (CONFIG.checkOnly) {
+                    const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                    sendDualAlert(`🎯 Swarm Complete!`, `Processing complete.`, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
+                }
 
                 console.log('🔄 Deep Refreshing for capacity scan...');
                 await Promise.all(agents.map(async (agent) => {
+                    // Spotter (Agent 1) should reload to refresh session/capacity token
+                    // But we do it carefully
                     await agent.page.reload({ waitUntil: 'networkidle' });
                 }));
 
