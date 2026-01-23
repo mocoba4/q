@@ -164,6 +164,21 @@ async function processJob(agent, job) {
         // Create a new page within the agent's context for each job
         page = await agent.context.newPage();
 
+        // --- VISIBILITY SPOOFING ---
+        // Force the page to believe it's always visible and active
+        await page.addInitScript(() => {
+            Object.defineProperty(document, 'visibilityState', {
+                get: () => 'visible',
+                configurable: true // Allow subsequent overrides if needed
+            });
+            Object.defineProperty(document, 'hidden', {
+                get: () => false,
+                configurable: true
+            });
+            // Optional: Mock window focus
+            window.hasFocus = () => true;
+        });
+
         // Speed Optimization: Block images/fonts on the specific TASK page for all agents (including Agent 1)
         await page.route('**/*.{png,jpg,jpeg,gif,webp,svg,woff,woff2,ttf,eot,mp4,webm,ico}', route => route.abort());
 
@@ -196,6 +211,7 @@ async function processJob(agent, job) {
         }
 
         if (acceptBtn) {
+            await page.bringToFront(); // Just in case, try to focus it physically
             await acceptBtn.first().click();
             console.log(`[Account ${agent.id}] Clicked Accept Task...`);
 
