@@ -167,8 +167,10 @@ function createSheetsLogger() {
     const dedupeWindowMs = (() => {
         // Back-compat: JOBS_DEDUPE_WINDOW_MS used to exist; prefer SHEETS_DEDUPE_WINDOW_MS.
         const v = process.env.SHEETS_DEDUPE_WINDOW_MS ?? process.env.JOBS_DEDUPE_WINDOW_MS;
-        const n = parseInt(v || '30000', 10);
-        return Number.isFinite(n) ? Math.max(0, n) : 30000;
+        // Default to 6 hours so the same job/status won't spam rows within a single CI run.
+        const DEFAULT_MS = 6 * 60 * 60 * 1000;
+        const n = parseInt(v || String(DEFAULT_MS), 10);
+        return Number.isFinite(n) ? Math.max(0, n) : DEFAULT_MS;
     })();
     let sheetsClient = null;
     let sheetId = null;
@@ -184,6 +186,16 @@ function createSheetsLogger() {
             const last = recentlyEnqueuedKeys.get(key);
             if (typeof last === 'number' && now - last < dedupeWindowMs) return;
             recentlyEnqueuedKeys.set(key, now);
+
+            // Light pruning to prevent unbounded growth in long runs.
+            // Keep this O(n) sweep very infrequent.
+            if (recentlyEnqueuedKeys.size > 5000) {
+                for (const [k, t] of recentlyEnqueuedKeys.entries()) {
+                    if (typeof t === 'number' && now - t >= dedupeWindowMs) {
+                        recentlyEnqueuedKeys.delete(k);
+                    }
+                }
+            }
         }
 
         const variations = Number(job.variations || 1) || 1;
