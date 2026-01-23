@@ -162,6 +162,13 @@ function createSheetsLogger() {
     const sheetTitle = process.env.GOOGLE_SHEETS_TAB || 'Jobs';
 
     const queue = [];
+    const recentlyEnqueuedKeys = new Map();
+    const dedupeWindowMs = (() => {
+        // Back-compat: JOBS_DEDUPE_WINDOW_MS used to exist; prefer SHEETS_DEDUPE_WINDOW_MS.
+        const v = process.env.SHEETS_DEDUPE_WINDOW_MS ?? process.env.JOBS_DEDUPE_WINDOW_MS;
+        const n = parseInt(v || '30000', 10);
+        return Number.isFinite(n) ? Math.max(0, n) : 30000;
+    })();
     let sheetsClient = null;
     let sheetId = null;
     let isReady = false;
@@ -169,6 +176,14 @@ function createSheetsLogger() {
 
     function enqueue(job, status) {
         if (!isEnabled()) return;
+
+        if (dedupeWindowMs > 0) {
+            const key = `${safeString(job?.id)}:${safeString(status)}`;
+            const now = Date.now();
+            const last = recentlyEnqueuedKeys.get(key);
+            if (typeof last === 'number' && now - last < dedupeWindowMs) return;
+            recentlyEnqueuedKeys.set(key, now);
+        }
 
         const variations = Number(job.variations || 1) || 1;
         const finalPrice = Number(job.finalPrice ?? job.price ?? 0) || 0;
@@ -340,6 +355,17 @@ function createSheetsLogger() {
         }
     }
 
+    async function flushNow() {
+        if (!isEnabled()) return;
+        // Drain the queue in batches.
+        while (queue.length > 0) {
+            // eslint-disable-next-line no-await-in-loop
+            await flushOnce();
+            // Give the event loop a tick if the sheet is unavailable.
+            if (queue.length > 0 && !isReady) break;
+        }
+    }
+
     function start() {
         if (!isEnabled()) return;
 
@@ -356,7 +382,7 @@ function createSheetsLogger() {
         process.on('SIGTERM', () => flushOnce().finally(() => process.exit(0)));
     }
 
-    return { start, enqueue };
+    return { start, enqueue, flushNow };
 }
 
 module.exports = {
