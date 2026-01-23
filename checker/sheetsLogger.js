@@ -253,8 +253,9 @@ function createSheetsLogger() {
 
             // Keep conditional formatting rules in sync for Status column (M).
             // Remove prior rules that target column M, then re-add our current set.
-            if (typeof sheetId === 'number') {
-                const existingSheet = sheets.find(s => s.properties && s.properties.sheetId === sheetId);
+            const numericSheetId = Number(sheetId);
+            if (Number.isFinite(numericSheetId)) {
+                const existingSheet = sheets.find(s => s.properties && Number(s.properties.sheetId) === numericSheetId);
                 const currentRules = existingSheet?.conditionalFormats || [];
                 const deleteRequests = [];
 
@@ -263,17 +264,17 @@ function createSheetsLogger() {
                     const ranges = rule?.ranges || [];
                     const touchesStatusColumn = ranges.some(r => {
                         const startCol = r.startColumnIndex ?? 0;
-                        const endCol = r.endColumnIndex ?? 0;
+                        const endCol = r.endColumnIndex ?? Number.MAX_SAFE_INTEGER;
                         return startCol <= 12 && endCol >= 13;
                     });
                     if (touchesStatusColumn) {
-                        deleteRequests.push({ deleteConditionalFormatRule: { sheetId, index: i } });
+                        deleteRequests.push({ deleteConditionalFormatRule: { sheetId: numericSheetId, index: i } });
                     }
                 }
 
                 const requests = [
                     ...deleteRequests,
-                    ...buildStatusConditionalFormattingRequests(sheetId)
+                    ...buildStatusConditionalFormattingRequests(numericSheetId)
                 ];
 
                 if (requests.length > 0) {
