@@ -38,6 +38,8 @@ function statusToText(status) {
             return 'Job taken';
         case 'failed':
             return 'Failed to take job';
+        case 'check_only':
+            return 'Check Only Mode';
         case 'ignored_capacity':
             return 'Ignored: Capacity Full';
         case 'ignored_low_price':
@@ -116,10 +118,26 @@ function buildStatusConditionalFormattingRequests(sheetId) {
                 }
             }
         },
-        // Legacy alias (kept for older rows)
+        // Blue = check-only
         {
             addConditionalFormatRule: {
                 index: 4,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Check Only Mode' }] },
+                        format: {
+                            backgroundColor: { red: 0.8, green: 0.9, blue: 1.0 },
+                            textFormat: { foregroundColor: { red: 0.05, green: 0.2, blue: 0.55 } }
+                        }
+                    }
+                }
+            }
+        },
+        // Legacy alias (kept for older rows)
+        {
+            addConditionalFormatRule: {
+                index: 5,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
