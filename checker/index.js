@@ -241,7 +241,11 @@ async function processJob(agent, job) {
             try { await page.bringToFront(); } catch (e) { /* ignore */ }
 
             console.log(`[Account ${agent.id}] Identifying Accept button (Attempt ${i + 1})...`);
-            acceptBtn = page.getByText('Accept task', { exact: true }).or(page.locator('button:has-text("Accept task")'));
+            // Prefer CSS selector for speed, but keep text-based fallbacks.
+            acceptBtn = page
+                .locator('button.cgt-button--primary:has-text("Accept task"), .cgt-button--primary:has-text("Accept task")')
+                .or(page.getByText('Accept task', { exact: true }))
+                .or(page.locator('button:has-text("Accept task")'));
             if (await acceptBtn.count() > 0) break;
 
             // Early Exit Optimization: Check if "Too Late" message appeared
@@ -261,12 +265,15 @@ async function processJob(agent, job) {
 
             // Handle Modal
             await page.waitForTimeout(500); // Shorter wait for modal
-            const confirmBtn = page.getByRole('button', { name: 'Yes' })
+            // Prefer provided CSS selector for the modal confirm button, keep role/text fallbacks.
+            const confirmBtn = page.locator('button.cgt-button--primary:nth-child(2)')
+                .or(page.getByRole('button', { name: 'Yes' }))
                 .or(page.getByRole('button', { name: 'Confirm' }))
                 .or(page.getByRole('button', { name: 'OK' }))
                 .or(page.getByText('Yes', { exact: true }));
 
             if (await confirmBtn.count() > 0) {
+                await confirmBtn.first().click();
                 console.log(`[Account ${agent.id}] Clicked Modal Confirmation. Verifying...`);
 
                 // Verification
@@ -275,11 +282,13 @@ async function processJob(agent, job) {
                     // RELAXED VERIFICATION: Wait for ANY URL change or "Cancel task" button
                     await Promise.race([
                         page.waitForURL(url => url !== startUrl, { timeout: 10000 }),
-                        page.waitForSelector('button:has-text("Cancel task")', { timeout: 10000 })
+                        // Prefer CSS selector for Cancel Task, keep text fallback.
+                        page.waitForSelector('.cgt-button--secondary-warning > div:nth-child(1), .cgt-button--secondary-warning, button:has-text("Cancel task")', { timeout: 10000 })
                     ]);
 
                     const endUrl = page.url();
-                    const cancelBtn = page.locator('button:has-text("Cancel task")');
+                    const cancelBtn = page.locator('.cgt-button--secondary-warning > div:nth-child(1), .cgt-button--secondary-warning')
+                        .or(page.locator('button:has-text("Cancel task")'));
 
                     if (endUrl !== startUrl || (await cancelBtn.count() > 0)) {
                         const screenshot = await page.screenshot({ fullPage: true });
