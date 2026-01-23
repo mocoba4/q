@@ -507,8 +507,8 @@ async function run() {
             // Check Only Mode Guard
             if (CONFIG.checkOnly) {
                 console.log('🛡️ [Event] Check Only Mode. Sending notification.');
-                // In check-only, we intentionally do not accept. Keep legacy label unless you want a dedicated status.
-                jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'ignored'));
+                // In check-only, we intentionally do not accept.
+                jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'check_only'));
                 const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                 await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`, screenshotBuffer);
                 isDispatching = false;
@@ -577,6 +577,16 @@ async function run() {
 
     // Sniper Storage
     let lastSniperJobs = [];
+    const recentlySeenJobIds = new Map();
+    const DEDUPE_WINDOW_MS = parseInt(process.env.JOBS_DEDUPE_WINDOW_MS || '30000', 10);
+
+    function isJobRecentlySeen(jobId) {
+        const now = Date.now();
+        const last = recentlySeenJobIds.get(jobId);
+        if (typeof last === 'number' && now - last < DEDUPE_WINDOW_MS) return true;
+        recentlySeenJobIds.set(jobId, now);
+        return false;
+    }
 
     // --- SNIPER ENGINE (Option 2) ---
     // We listen to the network to catch jobs BEFORE the browser even finishes drawing them.
@@ -624,10 +634,16 @@ async function run() {
                 });
 
                 lastSniperJobs = parsed;
+                const fresh = parsed.filter(j => !isJobRecentlySeen(j.id));
+
                 if (parsed.length > 0) {
                     console.log(`[Sniper] 🎯 Captured ${parsed.length} jobs via API.`);
+                }
+
+                if (fresh.length > 0) {
+                    console.log(`[Sniper] 🆕 New jobs since last refresh: ${fresh.length}`);
                     // TRIGGER SWARM IMMEDIATELY
-                    triggerSwarm(parsed).catch(err => console.error('Swarm Trigger Error:', err.message));
+                    triggerSwarm(fresh).catch(err => console.error('Swarm Trigger Error:', err.message));
                 }
             } catch (e) {
                 // Ignore parse errors if body is not JSON or empty
