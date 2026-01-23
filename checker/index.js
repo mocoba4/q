@@ -265,12 +265,12 @@ async function processJob(agent, job) {
 
             // Handle Modal
             await page.waitForTimeout(500); // Shorter wait for modal
-            // Prefer provided CSS selector for the modal confirm button, keep role/text fallbacks.
-            const confirmBtn = page.locator('button.cgt-button--primary:nth-child(2)')
-                .or(page.getByRole('button', { name: 'Yes' }))
+            // Prefer role/text first (safer than global CSS), then fall back to provided CSS selector.
+            const confirmBtn = page.getByRole('button', { name: 'Yes' })
+                .or(page.getByText('Yes', { exact: true }))
                 .or(page.getByRole('button', { name: 'Confirm' }))
                 .or(page.getByRole('button', { name: 'OK' }))
-                .or(page.getByText('Yes', { exact: true }));
+                .or(page.locator('button.cgt-button--primary:nth-child(2)'));
 
             if (await confirmBtn.count() > 0) {
                 await confirmBtn.first().click();
