@@ -76,31 +76,31 @@ async function sendNtfyAlert(message, imageBuffer) {
     }
 
     const url = `https://ntfy.sh/${CONFIG.ntfyTopic}`;
-    try {
-        if (imageBuffer) {
-            await axios.put(url, imageBuffer, {
-                headers: {
-                    'Title': 'Website Checker Alert',
-                    'Priority': '5',
-                    'Tags': 'warning,rocket',
-                    'Filename': 'screenshot.png',
-                    'Header': 'X-Message'
-                }
-            });
-            console.log('ntfy screenshot sent.');
-        } else {
-            await axios.post(url, message, {
-                headers: {
-                    'Title': 'Website Checker Alert',
-                    'Priority': '5',
-                    'Tags': 'warning,rocket'
-                }
-            });
-            console.log('ntfy text sent.');
-        }
+    const headers = {
+        'Title': 'Website Checker Alert',
+        'Priority': '5',
+        'Tags': 'warning,rocket'
+    };
+    if (imageBuffer) {
+        headers['Filename'] = 'screenshot.png';
+        headers['Header'] = 'X-Message';
+    }
 
-    } catch (error) {
-        console.error('Failed to send ntfy alert:', error.message);
+    const MAX_RETRIES = 3;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            if (imageBuffer) {
+                await axios.put(url, imageBuffer, { headers, timeout: 10000 }); // 10s timeout
+                console.log('ntfy screenshot sent.');
+            } else {
+                await axios.post(url, message, { headers, timeout: 10000 });
+                console.log('ntfy text sent.');
+            }
+            return; // Success, exit
+        } catch (error) {
+            console.error(`ntfy alert failed (Attempt ${attempt}/${MAX_RETRIES}): ${error.message}`);
+            if (attempt < MAX_RETRIES) await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
+        }
     }
 }
 
@@ -227,7 +227,10 @@ async function processJob(agent, job) {
                         const rawPrice = String(job.price).split('').join(' ');
                         const msg = `✅ Account ${agent.id} SECURED Job!\nPrice: $${job.price}\nType: ${job.isGrouped ? 'Grouped' : 'Single'}`;
                         console.log(`[Account ${agent.id}] SUCCESS! Price: [ ${rawPrice} ]`);
-                        await sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot);
+                        // FIRE AND FORGET NOTIFICATION (Parallel)
+                        sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot)
+                            .catch(err => console.error(`Background Notification Failed: ${err.message}`));
+
                         return true;
                     }
                 } catch (e) { console.log(`[Account ${agent.id}] Verification Failed: ${e.message}`); }
@@ -393,6 +396,22 @@ async function run() {
 
         if (jobsToAssign.length === 0) {
             console.log('[Event] No jobs matched price criteria.');
+
+            // CHEAP JOB WARNING
+            // If we have valid jobs but filtered them all out, warn the user
+            if (validJobs.length > 0) {
+                console.log('⚠️ [Event] Jobs ignored due to low price. Sending warning...');
+                try {
+                    const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                    // Fire and forget
+                    const ignoredPrices = validJobs.map(j => `$${j.price}`).join(', ');
+                    sendDualAlert(`⚠️ Jobs Ignored (Too Cheap): ${ignoredPrices}`, `Jobs Ignored: ${ignoredPrices}`, screenshotBuffer)
+                        .catch(e => console.error('Cheap Job Alert Failed:', e.message));
+                } catch (e) {
+                    console.error('Failed to capture cheap job screenshot:', e.message);
+                }
+            }
+
             isDispatching = false;
             return;
         }
