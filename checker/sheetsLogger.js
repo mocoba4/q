@@ -38,10 +38,101 @@ function statusToText(status) {
             return 'Job taken';
         case 'failed':
             return 'Failed to take job';
+        case 'ignored_capacity':
+            return 'Ignored: Capacity Full';
+        case 'ignored_low_price':
+            return 'Ignored: Low Price';
         case 'ignored':
         default:
             return 'Job ignored';
     }
+}
+
+function buildStatusConditionalFormattingRequests(sheetId) {
+    const statusRange = { sheetId, startRowIndex: 1, startColumnIndex: 12, endColumnIndex: 13 };
+
+    return [
+        // Green = taken
+        {
+            addConditionalFormatRule: {
+                index: 0,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Job taken' }] },
+                        format: {
+                            backgroundColor: { red: 0.75, green: 0.95, blue: 0.75 },
+                            textFormat: { foregroundColor: { red: 0, green: 0.4, blue: 0 } }
+                        }
+                    }
+                }
+            }
+        },
+        // Red = failed
+        {
+            addConditionalFormatRule: {
+                index: 1,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Failed to take job' }] },
+                        format: {
+                            backgroundColor: { red: 0.98, green: 0.8, blue: 0.8 },
+                            textFormat: { foregroundColor: { red: 0.6, green: 0, blue: 0 } }
+                        }
+                    }
+                }
+            }
+        },
+        // Yellow = capacity full
+        {
+            addConditionalFormatRule: {
+                index: 2,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Ignored: Capacity Full' }] },
+                        format: {
+                            backgroundColor: { red: 1.0, green: 0.95, blue: 0.6 },
+                            textFormat: { foregroundColor: { red: 0.1, green: 0.1, blue: 0.1 } }
+                        }
+                    }
+                }
+            }
+        },
+        // Black/gray = low price
+        {
+            addConditionalFormatRule: {
+                index: 3,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Ignored: Low Price' }] },
+                        format: {
+                            backgroundColor: { red: 0.92, green: 0.92, blue: 0.92 },
+                            textFormat: { foregroundColor: { red: 0.05, green: 0.05, blue: 0.05 } }
+                        }
+                    }
+                }
+            }
+        },
+        // Legacy alias (kept for older rows)
+        {
+            addConditionalFormatRule: {
+                index: 4,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Job ignored' }] },
+                        format: {
+                            backgroundColor: { red: 0.92, green: 0.92, blue: 0.92 },
+                            textFormat: { foregroundColor: { red: 0.05, green: 0.05, blue: 0.05 } }
+                        }
+                    }
+                }
+            }
+        }
+    ];
 }
 
 function isEnabled() {
@@ -127,6 +218,39 @@ function createSheetsLogger() {
                 sheetId = existing.properties.sheetId;
             }
 
+            // Keep conditional formatting rules in sync for Status column (M).
+            // Remove prior rules that target column M, then re-add our current set.
+            if (typeof sheetId === 'number') {
+                const existingSheet = sheets.find(s => s.properties && s.properties.sheetId === sheetId);
+                const currentRules = existingSheet?.conditionalFormats || [];
+                const deleteRequests = [];
+
+                for (let i = currentRules.length - 1; i >= 0; i--) {
+                    const rule = currentRules[i];
+                    const ranges = rule?.ranges || [];
+                    const touchesStatusColumn = ranges.some(r => {
+                        const startCol = r.startColumnIndex ?? 0;
+                        const endCol = r.endColumnIndex ?? 0;
+                        return startCol <= 12 && endCol >= 13;
+                    });
+                    if (touchesStatusColumn) {
+                        deleteRequests.push({ deleteConditionalFormatRule: { sheetId, index: i } });
+                    }
+                }
+
+                const requests = [
+                    ...deleteRequests,
+                    ...buildStatusConditionalFormattingRequests(sheetId)
+                ];
+
+                if (requests.length > 0) {
+                    await sheetsClient.spreadsheets.batchUpdate({
+                        spreadsheetId,
+                        requestBody: { requests }
+                    });
+                }
+            }
+
             // If the header row is empty, write headers and conditional formatting rules.
             const headerRes = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
@@ -160,71 +284,7 @@ function createSheetsLogger() {
                     }
                 });
 
-                // Conditional formatting for Status column (M).
-                // Green = Job taken, Black = Job ignored, Red = Failed to take job.
-                if (typeof sheetId === 'number') {
-                    await sheetsClient.spreadsheets.batchUpdate({
-                        spreadsheetId,
-                        requestBody: {
-                            requests: [
-                                {
-                                    addConditionalFormatRule: {
-                                        index: 0,
-                                        rule: {
-                                            ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 12, endColumnIndex: 13 }],
-                                            booleanRule: {
-                                                condition: {
-                                                    type: 'TEXT_EQ',
-                                                    values: [{ userEnteredValue: 'Job taken' }]
-                                                },
-                                                format: {
-                                                    backgroundColor: { red: 0.75, green: 0.95, blue: 0.75 },
-                                                    textFormat: { foregroundColor: { red: 0, green: 0.4, blue: 0 } }
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                {
-                                    addConditionalFormatRule: {
-                                        index: 1,
-                                        rule: {
-                                            ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 12, endColumnIndex: 13 }],
-                                            booleanRule: {
-                                                condition: {
-                                                    type: 'TEXT_EQ',
-                                                    values: [{ userEnteredValue: 'Job ignored' }]
-                                                },
-                                                format: {
-                                                    backgroundColor: { red: 0.92, green: 0.92, blue: 0.92 },
-                                                    textFormat: { foregroundColor: { red: 0.05, green: 0.05, blue: 0.05 } }
-                                                }
-                                            }
-                                        }
-                                    }
-                                },
-                                {
-                                    addConditionalFormatRule: {
-                                        index: 2,
-                                        rule: {
-                                            ranges: [{ sheetId, startRowIndex: 1, startColumnIndex: 12, endColumnIndex: 13 }],
-                                            booleanRule: {
-                                                condition: {
-                                                    type: 'TEXT_EQ',
-                                                    values: [{ userEnteredValue: 'Failed to take job' }]
-                                                },
-                                                format: {
-                                                    backgroundColor: { red: 0.98, green: 0.8, blue: 0.8 },
-                                                    textFormat: { foregroundColor: { red: 0.6, green: 0, blue: 0 } }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            ]
-                        }
-                    });
-                }
+                // Conditional formatting handled above (kept in sync even if sheet already exists).
             }
 
             isReady = true;

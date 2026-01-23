@@ -465,7 +465,7 @@ async function run() {
             console.log('[Event] No jobs matched price criteria.');
 
             // Log all detected jobs as ignored (too cheap) without slowing down.
-            validJobs.forEach(j => sheetsLogger.enqueue(j, 'ignored'));
+            validJobs.forEach(j => sheetsLogger.enqueue(j, 'ignored_low_price'));
 
             // CHEAP JOB WARNING
             // If we have valid jobs but filtered them all out, warn the user
@@ -507,6 +507,7 @@ async function run() {
             // Check Only Mode Guard
             if (CONFIG.checkOnly) {
                 console.log('🛡️ [Event] Check Only Mode. Sending notification.');
+                // In check-only, we intentionally do not accept. Keep legacy label unless you want a dedicated status.
                 jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'ignored'));
                 const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                 await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`, screenshotBuffer);
@@ -568,7 +569,7 @@ async function run() {
             console.log('[Event] No agents have capacity for these jobs.');
 
             // Log jobs as ignored due to capacity.
-            jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'ignored'));
+            jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'ignored_capacity'));
         }
 
         isDispatching = false;
