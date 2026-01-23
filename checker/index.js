@@ -331,6 +331,39 @@ async function run() {
         process.exit(1);
     }
 
+    // Google Sheets logging (non-blocking; does not affect accept speed)
+    const sheetsLogger = createSheetsLogger();
+
+    const SHEETS_TEST_MODE = /^(1|true|on|yes)$/i.test(process.env.SHEETS_TEST_MODE || '');
+    if (SHEETS_TEST_MODE) {
+        console.log('[Sheets] TEST MODE enabled. Sending dummy rows and exiting.');
+
+        const dummyBase = {
+            id: `test_${Date.now()}`,
+            url: 'https://example.com/job/brief',
+            title: 'Sheets Test Job',
+            originalPrice: 20,
+            finalPrice: 25,
+            multiplier: 1.25,
+            complexity: 4,
+            groupType: 'variations',
+            tags: ['test', 'dummy'],
+            isGrouped: true,
+            variations: 4,
+            pricePerUnit: 6.25
+        };
+
+        sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_taken` }, 'taken');
+        sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_failed` }, 'failed');
+        sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_low_price` }, 'ignored_low_price');
+        sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_capacity` }, 'ignored_capacity');
+        sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_check_only` }, 'check_only');
+
+        await sheetsLogger.flushNow();
+        console.log('[Sheets] TEST MODE done.');
+        process.exit(0);
+    }
+
     const showBrowser = process.env.SHOW_BROWSER === 'true';
 
     // Safety Mode Override: If checkOnly, only use the first account for spotting
@@ -339,9 +372,6 @@ async function run() {
 
     const browser = await chromium.launch({ headless: !showBrowser });
     const agents = [];
-
-    // Google Sheets logging (non-blocking; does not affect accept speed)
-    const sheetsLogger = createSheetsLogger();
     sheetsLogger.start();
 
     // --- INIT SWARM ---
@@ -577,16 +607,6 @@ async function run() {
 
     // Sniper Storage
     let lastSniperJobs = [];
-    const recentlySeenJobIds = new Map();
-    const DEDUPE_WINDOW_MS = parseInt(process.env.JOBS_DEDUPE_WINDOW_MS || '30000', 10);
-
-    function isJobRecentlySeen(jobId) {
-        const now = Date.now();
-        const last = recentlySeenJobIds.get(jobId);
-        if (typeof last === 'number' && now - last < DEDUPE_WINDOW_MS) return true;
-        recentlySeenJobIds.set(jobId, now);
-        return false;
-    }
 
     // --- SNIPER ENGINE (Option 2) ---
     // We listen to the network to catch jobs BEFORE the browser even finishes drawing them.
@@ -634,16 +654,13 @@ async function run() {
                 });
 
                 lastSniperJobs = parsed;
-                const fresh = parsed.filter(j => !isJobRecentlySeen(j.id));
-
                 if (parsed.length > 0) {
                     console.log(`[Sniper] 🎯 Captured ${parsed.length} jobs via API.`);
                 }
 
-                if (fresh.length > 0) {
-                    console.log(`[Sniper] 🆕 New jobs since last refresh: ${fresh.length}`);
-                    // TRIGGER SWARM IMMEDIATELY
-                    triggerSwarm(fresh).catch(err => console.error('Swarm Trigger Error:', err.message));
+                // Always allow re-triggering accepts; Sheets logging has its own dedupe.
+                if (parsed.length > 0) {
+                    triggerSwarm(parsed).catch(err => console.error('Swarm Trigger Error:', err.message));
                 }
             } catch (e) {
                 // Ignore parse errors if body is not JSON or empty
