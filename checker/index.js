@@ -480,9 +480,70 @@ async function run() {
     let keepRunning = true;
     let isDispatching = false; // The Lock 🔒
 
+    // If new jobs are detected while dispatching, we queue them instead of dropping them.
+    const pendingJobsById = new Map();
+    const DISPATCH_QUEUE_ALERT_COOLDOWN_MS = Math.max(0, parseInt(process.env.DISPATCH_QUEUE_ALERT_COOLDOWN_MS || '15000', 10) || 15000);
+    const CAPACITY_FULL_ALERT_COOLDOWN_MS = Math.max(0, parseInt(process.env.CAPACITY_FULL_ALERT_COOLDOWN_MS || '30000', 10) || 30000);
+    let lastQueuedAlertAt = 0;
+    let lastCapacityFullAlertAt = 0;
+
+    function enqueuePendingJobs(jobs) {
+        for (const job of jobs || []) {
+            if (!job || job.id === undefined || job.id === null) continue;
+            pendingJobsById.set(String(job.id), job);
+        }
+    }
+
+    function fireAndForgetSpotterAlert({ telegramMsg, ntfyMsg, cooldownMs, getLastAt, setLastAt }) {
+        const now = Date.now();
+        const lastAt = getLastAt();
+        if (cooldownMs > 0 && now - lastAt < cooldownMs) return;
+        setLastAt(now);
+
+        void (async () => {
+            try {
+                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
+            } catch (e) {
+                // Best-effort: If screenshot fails, still send a text alert.
+                try {
+                    await sendDualAlert(telegramMsg, ntfyMsg);
+                } catch (_) {
+                    // ignore
+                }
+            }
+        })().catch(() => {});
+    }
+
+    function drainPendingJobsSoon() {
+        if (isDispatching) return;
+        if (pendingJobsById.size === 0) return;
+
+        const jobs = Array.from(pendingJobsById.values());
+        pendingJobsById.clear();
+
+        // Run next tick to avoid deep recursion / stack growth.
+        setTimeout(() => {
+            triggerSwarm(jobs).catch(err => console.error('Swarm Trigger Error (drain):', err.message));
+        }, 0);
+    }
+
     // Helper: The Swarm Trigger
     async function triggerSwarm(validJobs) {
-        if (isDispatching) return; // Prevent double firing
+        if (isDispatching) {
+            // Do not drop detections during an active dispatch.
+            enqueuePendingJobs(validJobs);
+
+            fireAndForgetSpotterAlert({
+                telegramMsg: `📥 Jobs detected while swarm is dispatching. Queued ${validJobs.length} jobs for next pass.`,
+                ntfyMsg: `Queued ${validJobs.length} jobs during dispatch`,
+                cooldownMs: DISPATCH_QUEUE_ALERT_COOLDOWN_MS,
+                getLastAt: () => lastQueuedAlertAt,
+                setLastAt: v => { lastQueuedAlertAt = v; }
+            });
+
+            return; // Let current dispatch finish; queued jobs will drain after.
+        }
         isDispatching = true;
         console.log(`\n🚀 [EVENT TRIGGER] Dispatching ${validJobs.length} jobs to swarm IMMEDIATELY...`);
 
@@ -513,6 +574,7 @@ async function run() {
             }
 
             isDispatching = false;
+            drainPendingJobsSoon();
             return;
         }
 
@@ -542,6 +604,7 @@ async function run() {
                 const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                 await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`, screenshotBuffer);
                 isDispatching = false;
+                drainPendingJobsSoon();
                 return;
             }
 
@@ -600,9 +663,19 @@ async function run() {
 
             // Log jobs as ignored due to capacity.
             jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'ignored_capacity'));
+
+            // Optional alert with screenshot so we don't silently miss opportunities.
+            fireAndForgetSpotterAlert({
+                telegramMsg: `⚠️ Jobs detected but capacity is full. (Queued count: 0)\nPassing price filter: ${jobsToAssign.length}`,
+                ntfyMsg: `Capacity full: ${jobsToAssign.length} jobs passed price filter`,
+                cooldownMs: CAPACITY_FULL_ALERT_COOLDOWN_MS,
+                getLastAt: () => lastCapacityFullAlertAt,
+                setLastAt: v => { lastCapacityFullAlertAt = v; }
+            });
         }
 
         isDispatching = false;
+        drainPendingJobsSoon();
     }
 
     // Sniper Storage
