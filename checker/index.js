@@ -157,6 +157,19 @@ async function getCapacity(page) {
     }
 }
 
+function getJobPriceFromAttributes(attributes) {
+    const attr = attributes || {};
+    const isGrouped = attr.partOfGroupOfRequests === true;
+
+    // For grouped jobs, the UI list price corresponds to groupData.pricingInformation.price
+    // (falls back to the per-item pricingInformation if groupData is missing).
+    const groupedPrice = attr.groupData?.pricingInformation?.price;
+    const itemPrice = attr.pricingInformation?.price;
+
+    const priceCandidate = (isGrouped ? (groupedPrice ?? itemPrice) : itemPrice);
+    return priceCandidate ?? parseFloat(attr.compensation) ?? 0;
+}
+
 // --- JOB PROCESSING ---
 async function processJob(agent, job) {
     let page;
@@ -189,12 +202,19 @@ async function processJob(agent, job) {
         // Agent 1 clicks, others go direct
         await page.goto(job.url, { waitUntil: 'domcontentloaded' });
 
+        // IMPORTANT: Some UIs hide the "Accept task" button unless the tab is active.
+        // In headed mode, we bring it to the front before attempting to detect/click.
+        try { await page.bringToFront(); } catch (e) { /* ignore */ }
+
         // Triple-Retry Logic for Accept Button
         let acceptBtn = null;
         const attempts = [0, 500, 1000]; // 0ms, 500ms, 1000ms waits
 
         for (let i = 0; i < attempts.length; i++) {
             if (attempts[i] > 0) await page.waitForTimeout(attempts[i]);
+
+            // Re-affirm focus between retries (headed mode).
+            try { await page.bringToFront(); } catch (e) { /* ignore */ }
 
             console.log(`[Account ${agent.id}] Identifying Accept button (Attempt ${i + 1})...`);
             acceptBtn = page.getByText('Accept task', { exact: true }).or(page.locator('button:has-text("Accept task")'));
@@ -211,7 +231,7 @@ async function processJob(agent, job) {
         }
 
         if (acceptBtn) {
-            await page.bringToFront(); // Just in case, try to focus it physically
+            try { await page.bringToFront(); } catch (e) { /* ignore */ }
             await acceptBtn.first().click();
             console.log(`[Account ${agent.id}] Clicked Accept Task...`);
 
@@ -330,8 +350,11 @@ async function run() {
                                     const attrs = j.attributes || {};
                                     const safeId = String(j.id).split('').join(' ');
                                     const safeTitle = String(attrs.title).split('').join(' ');
-                                    const priceInfo = attrs.pricingInformation || {};
-                                    const safePrice = String(priceInfo.price || attrs.compensation).split('').join(' ');
+                                    const isGrouped = attrs.partOfGroupOfRequests === true;
+                                    const groupedPrice = attrs.groupData?.pricingInformation?.price;
+                                    const itemPrice = attrs.pricingInformation?.price;
+                                    const priceForLog = (isGrouped ? (groupedPrice ?? itemPrice) : itemPrice) ?? attrs.compensation;
+                                    const safePrice = String(priceForLog).split('').join(' ');
 
                                     console.log(`[Job] ID: ${safeId}`);
                                     console.log(`      Title: ${safeTitle}`);
@@ -521,11 +544,10 @@ async function run() {
 
                 const parsed = rawJobs.map(item => {
                     const attr = item.attributes || {};
-                    const priceInfo = attr.pricingInformation || {};
                     const isGrouped = attr.partOfGroupOfRequests === true;
 
                     const jobUrl = `${CONFIG.url}/${item.id}/brief`;
-                    const price = priceInfo.price || parseFloat(attr.compensation) || 0;
+                    const price = getJobPriceFromAttributes(attr);
 
                     // Unmasked pricing in logs for Sniper verification
                     const rawPriceLog = String(price).split('').join(' ');

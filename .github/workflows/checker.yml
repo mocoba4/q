@@ -30,7 +30,7 @@ jobs:
     - name: Cache Browser Session
       uses: actions/cache@v3
       with:
-        path: checker/session.json
+        path: checker/session_*.json
         # Generate a new key every time to force a save
         key: session-${{ github.run_id }}
         restore-keys: |
