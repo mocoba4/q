@@ -2,6 +2,7 @@ const { chromium } = require('playwright');
 const axios = require('axios');
 const FormData = require('form-data');
 require('dotenv').config();
+const { createSheetsLogger } = require('./sheetsLogger');
 
 // Configuration
 const CONFIG = {
@@ -170,6 +171,29 @@ function getJobPriceFromAttributes(attributes) {
     return priceCandidate ?? parseFloat(attr.compensation) ?? 0;
 }
 
+function getJobOriginalPriceFromAttributes(attributes) {
+    const attr = attributes || {};
+    const isGrouped = attr.partOfGroupOfRequests === true;
+
+    const groupedOriginal = attr.groupData?.pricingInformation?.originalPrice;
+    const groupedComp = attr.groupData?.compensation;
+
+    const itemOriginal = attr.pricingInformation?.originalPrice;
+    const itemComp = attr.compensation;
+
+    const originalCandidate = (isGrouped ? (groupedOriginal ?? groupedComp ?? itemOriginal ?? itemComp) : (itemOriginal ?? itemComp));
+    const n = typeof originalCandidate === 'string' ? parseFloat(originalCandidate) : originalCandidate;
+    return Number.isFinite(n) ? n : 0;
+}
+
+function getJobMultiplierFromAttributes(attributes) {
+    const attr = attributes || {};
+    const isGrouped = attr.partOfGroupOfRequests === true;
+    const groupedMultiplier = attr.groupData?.pricingInformation?.multiplier;
+    const itemMultiplier = attr.pricingInformation?.multiplier;
+    return (isGrouped ? (groupedMultiplier ?? itemMultiplier) : itemMultiplier) ?? '';
+}
+
 // --- JOB PROCESSING ---
 async function processJob(agent, job) {
     let page;
@@ -225,7 +249,7 @@ async function processJob(agent, job) {
             if (await tooLateInfo.count() > 0) {
                 acceptBtn = null; // Ensure null so we skip
                 console.log(`[Account ${agent.id}] FAILED: Job already taken (Early Exit on Attempt ${i + 1})`);
-                return false;
+                return { ok: false, reason: 'too_late' };
             }
             acceptBtn = null;
         }
@@ -267,7 +291,7 @@ async function processJob(agent, job) {
                         sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot)
                             .catch(err => console.error(`Background Notification Failed: ${err.message}`));
 
-                        return true;
+                        return { ok: true, reason: 'secured' };
                     }
                 } catch (e) { console.log(`[Account ${agent.id}] Verification Failed: ${e.message}`); }
             } else {
@@ -288,7 +312,7 @@ async function processJob(agent, job) {
     } finally {
         if (page) await page.close();
     }
-    return false;
+    return { ok: false, reason: 'failed' };
 }
 
 
@@ -315,6 +339,10 @@ async function run() {
 
     const browser = await chromium.launch({ headless: !showBrowser });
     const agents = [];
+
+    // Google Sheets logging (non-blocking; does not affect accept speed)
+    const sheetsLogger = createSheetsLogger();
+    sheetsLogger.start();
 
     // --- INIT SWARM ---
     for (const acc of effectiveAccounts) {
@@ -436,6 +464,9 @@ async function run() {
         if (jobsToAssign.length === 0) {
             console.log('[Event] No jobs matched price criteria.');
 
+            // Log all detected jobs as ignored (too cheap) without slowing down.
+            validJobs.forEach(j => sheetsLogger.enqueue(j, 'ignored'));
+
             // CHEAP JOB WARNING
             // If we have valid jobs but filtered them all out, warn the user
             if (validJobs.length > 0) {
@@ -476,6 +507,7 @@ async function run() {
             // Check Only Mode Guard
             if (CONFIG.checkOnly) {
                 console.log('🛡️ [Event] Check Only Mode. Sending notification.');
+                jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'ignored'));
                 const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                 await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`, screenshotBuffer);
                 isDispatching = false;
@@ -489,7 +521,16 @@ async function run() {
                     console.log(`[Account ${agent.id}] Parallel attack on ${queue.length} jobs...`);
                     while (queue.length > 0) {
                         const batch = queue.splice(0, CONFIG.maxConcurrentTabs);
-                        await Promise.all(batch.map(j => processJob(agent, j)));
+                        const results = await Promise.all(batch.map(j => processJob(agent, j)));
+
+                        // Non-blocking logging of outcomes.
+                        results.forEach((res, idx) => {
+                            const job = batch[idx];
+                            if (!job) return;
+                            if (res && res.ok) sheetsLogger.enqueue(job, 'taken');
+                            else if (res && res.reason === 'too_late') sheetsLogger.enqueue(job, 'failed');
+                            else sheetsLogger.enqueue(job, 'failed');
+                        });
                     }
                 }
             }));
@@ -525,6 +566,9 @@ async function run() {
             }
         } else {
             console.log('[Event] No agents have capacity for these jobs.');
+
+            // Log jobs as ignored due to capacity.
+            jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'ignored'));
         }
 
         isDispatching = false;
@@ -548,18 +592,33 @@ async function run() {
 
                     const jobUrl = `${CONFIG.url}/${item.id}/brief`;
                     const price = getJobPriceFromAttributes(attr);
+                    const originalPrice = getJobOriginalPriceFromAttributes(attr);
+                    const multiplier = getJobMultiplierFromAttributes(attr);
+                    const complexity = (attr.complexity ?? attr.groupData?.complexity) ?? '';
+                    const title = attr.title ?? '';
+                    const groupType = attr.groupType ?? '';
+                    const tags = Array.isArray(attr.tags) ? attr.tags : [];
 
                     // Unmasked pricing in logs for Sniper verification
                     const rawPriceLog = String(price).split('').join(' ');
                     console.log(`[Sniper] Detected Job ${item.id} | Price: [ ${rawPriceLog} ]`);
 
+                    const variations = isGrouped ? (attr.groupData?.size || 1) : 1;
+
                     return {
                         id: item.id,
                         url: jobUrl,
                         price: price,
+                        finalPrice: price,
+                        originalPrice,
+                        multiplier,
+                        complexity,
+                        title,
+                        groupType,
+                        tags,
                         isGrouped: isGrouped,
-                        variations: isGrouped ? (attr.groupData?.size || 1) : 1,
-                        pricePerUnit: isGrouped ? (price / (attr.groupData?.size || 1)) : price
+                        variations,
+                        pricePerUnit: isGrouped ? (price / variations) : price
                     };
                 });
 

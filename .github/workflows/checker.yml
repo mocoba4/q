@@ -68,3 +68,8 @@ jobs:
         CG_EMAIL5: ${{ secrets.CG_EMAIL5 }}
         CG_PASSWORD5: ${{ secrets.CG_PASSWORD5 }}
         CHECK_INTERVAL: ${{ secrets.CHECK_INTERVAL }}
+        GOOGLE_SHEETS_ID: ${{ secrets.GOOGLE_SHEETS_ID }}
+        GOOGLE_SHEETS_TAB: ${{ secrets.GOOGLE_SHEETS_TAB }}
+        GOOGLE_SERVICE_ACCOUNT_JSON_BASE64: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 }}
+        GOOGLE_SHEETS_FLUSH_MS: ${{ secrets.GOOGLE_SHEETS_FLUSH_MS }}
+        GOOGLE_SHEETS_BATCH_SIZE: ${{ secrets.GOOGLE_SHEETS_BATCH_SIZE }}
