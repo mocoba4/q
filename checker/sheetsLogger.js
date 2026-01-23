@@ -189,10 +189,12 @@ function createSheetsLogger() {
         const variations = Number(job.variations || 1) || 1;
         const finalPrice = Number(job.finalPrice ?? job.price ?? 0) || 0;
         const pricePerVariation = variations > 0 ? (finalPrice / variations) : finalPrice;
+        const detectedAt = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
 
         queue.push({
             values: [
                 statusToText(status),
+                detectedAt,
                 '=ROW()-1',
                 safeString(job.title),
                 safeString(job.id),
@@ -288,6 +290,48 @@ function createSheetsLogger() {
                 }
             }
 
+            // Ensure we have a Detected at column right after Status.
+            // If missing, insert it at index 1 (column B) and set the header.
+            const headerScanRes2 = await sheetsClient.spreadsheets.values.get({
+                spreadsheetId,
+                range: `${sheetTitle}!A1:Z1`
+            }).catch(() => null);
+            const headerScanRow2 = headerScanRes2?.data?.values?.[0] || [];
+            const detectedAtIndex = headerScanRow2.findIndex(v => safeString(v).trim() === 'Detected at');
+            if (detectedAtIndex === -1) {
+                try {
+                    await sheetsClient.spreadsheets.batchUpdate({
+                        spreadsheetId,
+                        requestBody: {
+                            requests: [
+                                {
+                                    insertDimension: {
+                                        range: {
+                                            sheetId,
+                                            dimension: 'COLUMNS',
+                                            startIndex: 1,
+                                            endIndex: 2
+                                        },
+                                        inheritFromBefore: false
+                                    }
+                                }
+                            ]
+                        }
+                    });
+
+                    await sheetsClient.spreadsheets.values.update({
+                        spreadsheetId,
+                        range: `${sheetTitle}!B1:B1`,
+                        valueInputOption: 'RAW',
+                        requestBody: { values: [['Detected at']] }
+                    });
+
+                    console.log('[Sheets] Added "Detected at" column at B.');
+                } catch (e) {
+                    console.error(`[Sheets] Detected-at column migration failed: ${e.message}`);
+                }
+            }
+
             // Keep conditional formatting rules in sync for Status column (A).
             // Remove prior rules that target column A, then re-add our current set.
             const numericSheetId = Number(sheetId);
@@ -332,7 +376,7 @@ function createSheetsLogger() {
             // If the header row is empty, write headers and conditional formatting rules.
             const headerRes = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
-                range: `${sheetTitle}!A1:M1`
+                range: `${sheetTitle}!A1:N1`
             }).catch(() => null);
 
             const headerRow = headerRes?.data?.values?.[0] || [];
@@ -341,11 +385,12 @@ function createSheetsLogger() {
             if (isHeaderEmpty) {
                 await sheetsClient.spreadsheets.values.update({
                     spreadsheetId,
-                    range: `${sheetTitle}!A1:M1`,
+                    range: `${sheetTitle}!A1:N1`,
                     valueInputOption: 'RAW',
                     requestBody: {
                         values: [[
                             'Status',
+                            'Detected at',
                             '#',
                             'Job title',
                             'Job ID',
@@ -388,7 +433,7 @@ function createSheetsLogger() {
 
             await sheetsClient.spreadsheets.values.append({
                 spreadsheetId,
-                range: `${sheetTitle}!A:M`,
+                range: `${sheetTitle}!A:N`,
                 valueInputOption: 'USER_ENTERED',
                 insertDataOption: 'INSERT_ROWS',
                 requestBody: { values: rows }
