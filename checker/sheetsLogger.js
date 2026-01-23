@@ -51,7 +51,8 @@ function statusToText(status) {
 }
 
 function buildStatusConditionalFormattingRequests(sheetId) {
-    const statusRange = { sheetId, startRowIndex: 1, startColumnIndex: 12, endColumnIndex: 13 };
+    // Status is column A (index 0). Apply formatting from row 2 downward.
+    const statusRange = { sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 };
 
     return [
         // Green = taken
@@ -191,6 +192,7 @@ function createSheetsLogger() {
 
         queue.push({
             values: [
+                statusToText(status),
                 '=ROW()-1',
                 safeString(job.title),
                 safeString(job.id),
@@ -202,8 +204,7 @@ function createSheetsLogger() {
                 safeString(variations),
                 safeString(pricePerVariation),
                 safeString(job.groupType ?? ''),
-                safeString(job.tags ?? ''),
-                statusToText(status)
+                safeString(job.tags ?? '')
             ],
             status
         });
@@ -251,11 +252,54 @@ function createSheetsLogger() {
                 sheetId = existing.properties.sheetId;
             }
 
-            // Keep conditional formatting rules in sync for Status column (M).
-            // Remove prior rules that target column M, then re-add our current set.
+            // If this sheet already has headers with Status in a different column,
+            // migrate by moving that column to the front (column A).
+            // This keeps existing rows aligned without rewriting cell values.
+            const headerScanRes = await sheetsClient.spreadsheets.values.get({
+                spreadsheetId,
+                range: `${sheetTitle}!A1:Z1`
+            }).catch(() => null);
+
+            const headerScanRow = headerScanRes?.data?.values?.[0] || [];
+            const statusIndex = headerScanRow.findIndex(v => safeString(v).trim() === 'Status');
+            if (statusIndex > 0) {
+                try {
+                    await sheetsClient.spreadsheets.batchUpdate({
+                        spreadsheetId,
+                        requestBody: {
+                            requests: [
+                                {
+                                    moveDimension: {
+                                        source: {
+                                            sheetId,
+                                            dimension: 'COLUMNS',
+                                            startIndex: statusIndex,
+                                            endIndex: statusIndex + 1
+                                        },
+                                        destinationIndex: 0
+                                    }
+                                }
+                            ]
+                        }
+                    });
+                    console.log(`[Sheets] Migrated Status column from index ${statusIndex} to column A.`);
+                } catch (e) {
+                    console.error(`[Sheets] Status column migration failed: ${e.message}`);
+                }
+            }
+
+            // Keep conditional formatting rules in sync for Status column (A).
+            // Remove prior rules that target column A, then re-add our current set.
             const numericSheetId = Number(sheetId);
             if (Number.isFinite(numericSheetId)) {
-                const existingSheet = sheets.find(s => s.properties && Number(s.properties.sheetId) === numericSheetId);
+                // Re-fetch to ensure we see any updates after moveDimension.
+                const meta2 = await sheetsClient.spreadsheets.get({
+                    spreadsheetId,
+                    fields: 'sheets(properties(sheetId,title),conditionalFormats)'
+                });
+
+                const sheets2 = meta2.data.sheets || [];
+                const existingSheet = sheets2.find(s => s.properties && Number(s.properties.sheetId) === numericSheetId);
                 const currentRules = existingSheet?.conditionalFormats || [];
                 const deleteRequests = [];
 
@@ -265,7 +309,7 @@ function createSheetsLogger() {
                     const touchesStatusColumn = ranges.some(r => {
                         const startCol = r.startColumnIndex ?? 0;
                         const endCol = r.endColumnIndex ?? Number.MAX_SAFE_INTEGER;
-                        return startCol <= 12 && endCol >= 13;
+                        return startCol <= 0 && endCol >= 1;
                     });
                     if (touchesStatusColumn) {
                         deleteRequests.push({ deleteConditionalFormatRule: { sheetId: numericSheetId, index: i } });
@@ -301,6 +345,7 @@ function createSheetsLogger() {
                     valueInputOption: 'RAW',
                     requestBody: {
                         values: [[
+                            'Status',
                             '#',
                             'Job title',
                             'Job ID',
@@ -313,7 +358,6 @@ function createSheetsLogger() {
                             'Price per variation',
                             'Group type',
                             'Tags',
-                            'Status'
                         ]]
                     }
                 });
