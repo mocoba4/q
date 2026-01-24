@@ -491,6 +491,7 @@ async function run() {
 
     // If new jobs are detected while dispatching, we queue them instead of dropping them.
     const pendingJobsById = new Map();
+    const seenJobIdsThisRun = new Set();
     const DISPATCH_QUEUE_ALERT_COOLDOWN_MS = Math.max(0, parseInt(process.env.DISPATCH_QUEUE_ALERT_COOLDOWN_MS || '15000', 10) || 15000);
     const CAPACITY_FULL_ALERT_COOLDOWN_MS = Math.max(0, parseInt(process.env.CAPACITY_FULL_ALERT_COOLDOWN_MS || '30000', 10) || 30000);
     let lastQueuedAlertAt = 0;
@@ -543,8 +544,16 @@ async function run() {
             // Do not drop detections during an active dispatch.
             enqueuePendingJobs(validJobs);
 
-            // Log detections immediately (non-blocking). Status may be superseded later.
-            (validJobs || []).forEach(j => sheetsLogger.enqueue(j, 'detected_queued'));
+            // Policy: Only log Detected (Queued) the FIRST time we ever see this job ID in this run.
+            // This prevents the Jobs view from regressing a later status back to Detected (Queued).
+            (validJobs || []).forEach(j => {
+                const id = j?.id;
+                if (id === undefined || id === null) return;
+                const key = String(id);
+                if (seenJobIdsThisRun.has(key)) return;
+                seenJobIdsThisRun.add(key);
+                sheetsLogger.enqueue(j, 'detected_queued');
+            });
 
             fireAndForgetSpotterAlert({
                 telegramMsg: `📥 Jobs detected while swarm is dispatching. Queued ${validJobs.length} jobs for next pass.`,
@@ -556,6 +565,13 @@ async function run() {
 
             return; // Let current dispatch finish; queued jobs will drain after.
         }
+
+        // Mark these job IDs as seen for this run (so later dispatch-time detections won't re-log detected_queued).
+        (validJobs || []).forEach(j => {
+            const id = j?.id;
+            if (id === undefined || id === null) return;
+            seenJobIdsThisRun.add(String(id));
+        });
         isDispatching = true;
         console.log(`\n🚀 [EVENT TRIGGER] Dispatching ${validJobs.length} jobs to swarm IMMEDIATELY...`);
 
