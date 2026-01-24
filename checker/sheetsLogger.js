@@ -203,6 +203,28 @@ function createSheetsLogger() {
         return `'${safe}'`;
     }
 
+    function buildHeaderIndexMap(headerRow) {
+        const map = new Map();
+        (headerRow || []).forEach((v, idx) => {
+            const key = safeString(v).trim().toLowerCase();
+            if (!key) return;
+            if (!map.has(key)) map.set(key, idx);
+        });
+        return map;
+    }
+
+    function normalizeRowToStandardOrder(row, headerIndex, standardHeaders) {
+        const out = new Array(standardHeaders.length).fill('');
+        for (let i = 0; i < standardHeaders.length; i++) {
+            const key = safeString(standardHeaders[i]).trim().toLowerCase();
+            const idx = headerIndex.get(key);
+            if (typeof idx === 'number' && idx >= 0 && idx < (row || []).length) {
+                out[i] = row[idx];
+            }
+        }
+        return out;
+    }
+
     function enqueue(job, status) {
         if (!isEnabled()) return;
 
@@ -308,6 +330,100 @@ function createSheetsLogger() {
             } else {
                 rawSheetId = existingRaw.properties.sheetId;
                 viewSheetId = existingView.properties.sheetId;
+            }
+
+            const headerValues = [[
+                'Status',
+                'Detected at',
+                '#',
+                'Job title',
+                'Job ID',
+                'Original price',
+                'Final price',
+                'Multiplier',
+                'Complexity',
+                'Job type',
+                'Variations',
+                'Price per variation',
+                'Group type',
+                'Tags'
+            ]];
+
+            // --- ONE-TIME MIGRATION (legacy Jobs -> raw tab) ---
+            // If the raw tab is empty, copy any existing rows from the Jobs tab into it once.
+            // We mark completion in raw!O1 so this won't repeat on GitHub Actions restarts.
+            try {
+                const [markerRes, rawPeekRes] = await Promise.all([
+                    sheetsClient.spreadsheets.values.get({
+                        spreadsheetId,
+                        range: `${rawTitle}!O1:O1`
+                    }).catch(() => null),
+                    sheetsClient.spreadsheets.values.get({
+                        spreadsheetId,
+                        range: `${rawTitle}!A1:N3`
+                    }).catch(() => null)
+                ]);
+
+                const markerVal = markerRes?.data?.values?.[0]?.[0];
+                const isMigrationDone = safeString(markerVal).trim() === 'migrated_from_jobs_v1';
+
+                const rawPeek = rawPeekRes?.data?.values || [];
+                // Consider raw non-empty if there is any non-header row with a Job ID value.
+                const rawHasData = rawPeek.length >= 2 && rawPeek.slice(1).some(r => safeString(r?.[4]).trim() !== '');
+
+                if (!isMigrationDone && !rawHasData) {
+                    const jobsRes = await sheetsClient.spreadsheets.values.get({
+                        spreadsheetId,
+                        range: `${viewTitle}!A1:Z`
+                    }).catch(() => null);
+
+                    const jobsValues = jobsRes?.data?.values || [];
+                    const jobsHeader = jobsValues[0] || [];
+                    const jobsRows = jobsValues.slice(1);
+
+                    // Only attempt migration if there are any rows with a Job ID value.
+                    if (jobsRows.length > 0) {
+                        const headerIndex = buildHeaderIndexMap(jobsHeader);
+                        const jobIdIdx = headerIndex.get('job id');
+                        const hasAnyJobIds = typeof jobIdIdx === 'number' && jobsRows.some(r => safeString(r?.[jobIdIdx]).trim() !== '');
+
+                        if (hasAnyJobIds) {
+                            // Ensure raw headers exist before appending.
+                            await sheetsClient.spreadsheets.values.update({
+                                spreadsheetId,
+                                range: `${rawTitle}!A1:N1`,
+                                valueInputOption: 'RAW',
+                                requestBody: { values: headerValues }
+                            });
+
+                            const standardHeaders = headerValues[0];
+                            const normalized = jobsRows
+                                .filter(r => typeof jobIdIdx === 'number' && safeString(r?.[jobIdIdx]).trim() !== '')
+                                .map(r => normalizeRowToStandardOrder(r, headerIndex, standardHeaders));
+
+                            if (normalized.length > 0) {
+                                await sheetsClient.spreadsheets.values.append({
+                                    spreadsheetId,
+                                    range: `${rawTitle}!A:N`,
+                                    valueInputOption: 'USER_ENTERED',
+                                    insertDataOption: 'INSERT_ROWS',
+                                    requestBody: { values: normalized }
+                                });
+
+                                // Mark migration done.
+                                await sheetsClient.spreadsheets.values.update({
+                                    spreadsheetId,
+                                    range: `${rawTitle}!O1:O1`,
+                                    valueInputOption: 'RAW',
+                                    requestBody: { values: [['migrated_from_jobs_v1']] }
+                                });
+                                console.log(`[Sheets] Migrated ${normalized.length} legacy rows from ${viewTitle} -> ${rawTitle}.`);
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error(`[Sheets] Legacy migration check failed: ${e.message}`);
             }
 
             // If this sheet already has headers with Status in a different column,
@@ -435,23 +551,6 @@ function createSheetsLogger() {
             await syncStatusFormattingForSheet(viewSheetId);
 
             // If the header row is empty, write headers and conditional formatting rules.
-            const headerValues = [[
-                'Status',
-                'Detected at',
-                '#',
-                'Job title',
-                'Job ID',
-                'Original price',
-                'Final price',
-                'Multiplier',
-                'Complexity',
-                'Job type',
-                'Variations',
-                'Price per variation',
-                'Group type',
-                'Tags'
-            ]];
-
             // RAW tab: write headers if empty.
             const rawHeaderRes = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
@@ -475,6 +574,12 @@ function createSheetsLogger() {
                 valueInputOption: 'RAW',
                 requestBody: { values: headerValues }
             });
+
+            // Clear any legacy values that would block the spill formula.
+            await sheetsClient.spreadsheets.values.clear({
+                spreadsheetId,
+                range: `${viewTitle}!A2:Z`
+            }).catch(() => null);
 
             const rawQ = quoteSheetName(rawTitle);
             const viewFormula = `=IFERROR(SORTN(SORT(FILTER(${rawQ}!A2:N, LEN(${rawQ}!E2:E)), 2, FALSE), 9^9, 2, 5, TRUE), "")`;
