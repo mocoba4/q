@@ -489,6 +489,13 @@ async function run() {
     let keepRunning = true;
     let isDispatching = false; // The Lock 🔒
 
+    // Flood guard: if a single check returns too many available jobs, switch to check-only for the rest of the run.
+    const MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY = (() => {
+        const n = parseInt(process.env.MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY || '20', 10);
+        return Number.isFinite(n) ? Math.max(0, n) : 20;
+    })();
+    let forcedCheckOnly = false;
+
     // If new jobs are detected while dispatching, we queue them instead of dropping them.
     const pendingJobsById = new Map();
     const seenJobIdsThisRun = new Set();
@@ -540,6 +547,41 @@ async function run() {
 
     // Helper: The Swarm Trigger
     async function triggerSwarm(validJobs) {
+        const effectiveCheckOnly = CONFIG.checkOnly || forcedCheckOnly;
+
+        if (effectiveCheckOnly) {
+            // In check-only, we do not attempt accepts, but we still log + alert.
+            if (isDispatching) {
+                (validJobs || []).forEach(j => sheetsLogger.enqueue(j, 'check_only'));
+
+                fireAndForgetSpotterAlert({
+                    telegramMsg: `🛡️ Check Only Mode active. Logged ${validJobs.length} jobs (dispatch in progress).`,
+                    ntfyMsg: `Check-only: logged ${validJobs.length} jobs during dispatch`,
+                    cooldownMs: DISPATCH_QUEUE_ALERT_COOLDOWN_MS,
+                    getLastAt: () => lastQueuedAlertAt,
+                    setLastAt: v => { lastQueuedAlertAt = v; }
+                });
+
+                return;
+            }
+
+            isDispatching = true;
+            console.log(`\n🛡️ [EVENT TRIGGER] Check Only Mode. Logging ${validJobs.length} jobs (no accepts).`);
+
+            (validJobs || []).forEach(j => sheetsLogger.enqueue(j, 'check_only'));
+
+            try {
+                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
+                await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`, screenshotBuffer);
+            } catch (e) {
+                await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`);
+            }
+
+            isDispatching = false;
+            drainPendingJobsSoon();
+            return;
+        }
+
         if (isDispatching) {
             // Do not drop detections during an active dispatch.
             enqueuePendingJobs(validJobs);
@@ -624,18 +666,6 @@ async function run() {
 
         const totalJobs = Object.values(agentQueues).flat().length;
         if (totalJobs > 0) {
-            // Check Only Mode Guard
-            if (CONFIG.checkOnly) {
-                console.log('🛡️ [Event] Check Only Mode. Sending notification.');
-                // In check-only, we intentionally do not accept.
-                jobsToAssign.forEach(j => sheetsLogger.enqueue(j, 'check_only'));
-                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`, screenshotBuffer);
-                isDispatching = false;
-                drainPendingJobsSoon();
-                return;
-            }
-
             // --- THE ATTACK ---
             await Promise.all(agents.map(async (agent) => {
                 const queue = agentQueues[agent.id];
@@ -757,6 +787,21 @@ async function run() {
                 lastSniperJobs = parsed;
                 if (parsed.length > 0) {
                     console.log(`[Sniper] 🎯 Captured ${parsed.length} jobs via API.`);
+                }
+
+                // Flood guard: if too many jobs appear at once, switch to check-only for the rest of this run.
+                if (!forcedCheckOnly && MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY > 0 && parsed.length > MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY) {
+                    forcedCheckOnly = true;
+                    pendingJobsById.clear();
+                    console.error(`\n🚨 [Flood Guard] Detected ${parsed.length} jobs in a single check (> ${MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY}). Switching to CHECK ONLY for the rest of the run.`);
+
+                    fireAndForgetSpotterAlert({
+                        telegramMsg: `🚨 Flood Guard: ${parsed.length} jobs detected at once. Switching to CHECK ONLY (no auto-accept) for the rest of the run.`,
+                        ntfyMsg: `Flood Guard: ${parsed.length} jobs → check-only for rest of run`,
+                        cooldownMs: 0,
+                        getLastAt: () => 0,
+                        setLastAt: () => {}
+                    });
                 }
 
                 // Always allow re-triggering accepts; Sheets logging has its own dedupe.
