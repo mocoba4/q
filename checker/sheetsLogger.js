@@ -34,6 +34,8 @@ function safeString(v) {
 
 function statusToText(status) {
     switch (status) {
+        case 'detected_queued':
+            return 'Detected (Queued)';
         case 'taken':
             return 'Job taken';
         case 'failed':
@@ -55,10 +57,26 @@ function buildStatusConditionalFormattingRequests(sheetId) {
     const statusRange = { sheetId, startRowIndex: 1, startColumnIndex: 0, endColumnIndex: 1 };
 
     return [
-        // Green = taken
+        // Purple = detected (queued)
         {
             addConditionalFormatRule: {
                 index: 0,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Detected (Queued)' }] },
+                        format: {
+                            backgroundColor: { red: 0.9, green: 0.85, blue: 1.0 },
+                            textFormat: { foregroundColor: { red: 0.25, green: 0.1, blue: 0.45 } }
+                        }
+                    }
+                }
+            }
+        },
+        // Green = taken
+        {
+            addConditionalFormatRule: {
+                index: 1,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -74,7 +92,7 @@ function buildStatusConditionalFormattingRequests(sheetId) {
         // Red = failed
         {
             addConditionalFormatRule: {
-                index: 1,
+                index: 2,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -90,7 +108,7 @@ function buildStatusConditionalFormattingRequests(sheetId) {
         // Yellow = capacity full
         {
             addConditionalFormatRule: {
-                index: 2,
+                index: 3,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -106,7 +124,7 @@ function buildStatusConditionalFormattingRequests(sheetId) {
         // Black/gray = low price
         {
             addConditionalFormatRule: {
-                index: 3,
+                index: 4,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -122,7 +140,7 @@ function buildStatusConditionalFormattingRequests(sheetId) {
         // Blue = check-only
         {
             addConditionalFormatRule: {
-                index: 4,
+                index: 5,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -138,7 +156,7 @@ function buildStatusConditionalFormattingRequests(sheetId) {
         // Legacy alias (kept for older rows)
         {
             addConditionalFormatRule: {
-                index: 5,
+                index: 6,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -160,7 +178,8 @@ function isEnabled() {
 
 function createSheetsLogger() {
     const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
-    const sheetTitle = process.env.GOOGLE_SHEETS_TAB || 'Jobs';
+    const viewTitle = process.env.GOOGLE_SHEETS_TAB || 'Jobs';
+    const rawTitle = process.env.GOOGLE_SHEETS_RAW_TAB || 'Not Important';
 
     const queue = [];
     const recentlyEnqueuedKeys = new Map();
@@ -173,9 +192,16 @@ function createSheetsLogger() {
         return Number.isFinite(n) ? Math.max(0, n) : DEFAULT_MS;
     })();
     let sheetsClient = null;
-    let sheetId = null;
+    let rawSheetId = null;
+    let viewSheetId = null;
     let isReady = false;
     let isFlushing = false;
+
+    function quoteSheetName(name) {
+        // Google Sheets uses single quotes for sheet names with spaces.
+        const safe = String(name).replace(/'/g, "''");
+        return `'${safe}'`;
+    }
 
     function enqueue(job, status) {
         if (!isEnabled()) return;
@@ -252,18 +278,36 @@ function createSheetsLogger() {
             });
 
             const sheets = meta.data.sheets || [];
-            const existing = sheets.find(s => s.properties && s.properties.title === sheetTitle);
+            const existingRaw = sheets.find(s => s.properties && s.properties.title === rawTitle);
+            const existingView = sheets.find(s => s.properties && s.properties.title === viewTitle);
 
-            if (!existing) {
-                const addSheetRes = await sheetsClient.spreadsheets.batchUpdate({
+            if (!existingRaw || !existingView) {
+                const requests = [];
+                if (!existingRaw) requests.push({ addSheet: { properties: { title: rawTitle } } });
+                if (!existingView) requests.push({ addSheet: { properties: { title: viewTitle } } });
+
+                const addRes = await sheetsClient.spreadsheets.batchUpdate({
                     spreadsheetId,
-                    requestBody: {
-                        requests: [{ addSheet: { properties: { title: sheetTitle } } }]
-                    }
+                    requestBody: { requests }
                 });
-                sheetId = addSheetRes.data.replies?.[0]?.addSheet?.properties?.sheetId ?? null;
+
+                // Replies are in request order.
+                const replies = addRes.data.replies || [];
+                let idx = 0;
+                if (!existingRaw) {
+                    rawSheetId = replies[idx]?.addSheet?.properties?.sheetId ?? null;
+                    idx++;
+                } else {
+                    rawSheetId = existingRaw.properties.sheetId;
+                }
+                if (!existingView) {
+                    viewSheetId = replies[idx]?.addSheet?.properties?.sheetId ?? null;
+                } else {
+                    viewSheetId = existingView.properties.sheetId;
+                }
             } else {
-                sheetId = existing.properties.sheetId;
+                rawSheetId = existingRaw.properties.sheetId;
+                viewSheetId = existingView.properties.sheetId;
             }
 
             // If this sheet already has headers with Status in a different column,
@@ -271,7 +315,7 @@ function createSheetsLogger() {
             // This keeps existing rows aligned without rewriting cell values.
             const headerScanRes = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
-                range: `${sheetTitle}!A1:Z1`
+                range: `${rawTitle}!A1:Z1`
             }).catch(() => null);
 
             const headerScanRow = headerScanRes?.data?.values?.[0] || [];
@@ -285,7 +329,7 @@ function createSheetsLogger() {
                                 {
                                     moveDimension: {
                                         source: {
-                                            sheetId,
+                                            sheetId: rawSheetId,
                                             dimension: 'COLUMNS',
                                             startIndex: statusIndex,
                                             endIndex: statusIndex + 1
@@ -306,7 +350,7 @@ function createSheetsLogger() {
             // If missing, insert it at index 1 (column B) and set the header.
             const headerScanRes2 = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
-                range: `${sheetTitle}!A1:Z1`
+                range: `${rawTitle}!A1:Z1`
             }).catch(() => null);
             const headerScanRow2 = headerScanRes2?.data?.values?.[0] || [];
             const detectedAtIndex = headerScanRow2.findIndex(v => safeString(v).trim() === 'Detected at');
@@ -319,7 +363,7 @@ function createSheetsLogger() {
                                 {
                                     insertDimension: {
                                         range: {
-                                            sheetId,
+                                            sheetId: rawSheetId,
                                             dimension: 'COLUMNS',
                                             startIndex: 1,
                                             endIndex: 2
@@ -333,7 +377,7 @@ function createSheetsLogger() {
 
                     await sheetsClient.spreadsheets.values.update({
                         spreadsheetId,
-                        range: `${sheetTitle}!B1:B1`,
+                        range: `${rawTitle}!B1:B1`,
                         valueInputOption: 'RAW',
                         requestBody: { values: [['Detected at']] }
                     });
@@ -346,8 +390,10 @@ function createSheetsLogger() {
 
             // Keep conditional formatting rules in sync for Status column (A).
             // Remove prior rules that target column A, then re-add our current set.
-            const numericSheetId = Number(sheetId);
-            if (Number.isFinite(numericSheetId)) {
+            async function syncStatusFormattingForSheet(targetSheetId) {
+                const numericSheetId = Number(targetSheetId);
+                if (!Number.isFinite(numericSheetId)) return;
+
                 // Re-fetch to ensure we see any updates after moveDimension.
                 const meta2 = await sheetsClient.spreadsheets.get({
                     spreadsheetId,
@@ -385,45 +431,62 @@ function createSheetsLogger() {
                 }
             }
 
+            await syncStatusFormattingForSheet(rawSheetId);
+            await syncStatusFormattingForSheet(viewSheetId);
+
             // If the header row is empty, write headers and conditional formatting rules.
-            const headerRes = await sheetsClient.spreadsheets.values.get({
+            const headerValues = [[
+                'Status',
+                'Detected at',
+                '#',
+                'Job title',
+                'Job ID',
+                'Original price',
+                'Final price',
+                'Multiplier',
+                'Complexity',
+                'Job type',
+                'Variations',
+                'Price per variation',
+                'Group type',
+                'Tags'
+            ]];
+
+            // RAW tab: write headers if empty.
+            const rawHeaderRes = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
-                range: `${sheetTitle}!A1:N1`
+                range: `${rawTitle}!A1:N1`
             }).catch(() => null);
 
-            const headerRow = headerRes?.data?.values?.[0] || [];
-            const isHeaderEmpty = headerRow.length === 0;
-
-            if (isHeaderEmpty) {
+            const rawHeaderRow = rawHeaderRes?.data?.values?.[0] || [];
+            if (rawHeaderRow.length === 0) {
                 await sheetsClient.spreadsheets.values.update({
                     spreadsheetId,
-                    range: `${sheetTitle}!A1:N1`,
+                    range: `${rawTitle}!A1:N1`,
                     valueInputOption: 'RAW',
-                    requestBody: {
-                        values: [[
-                            'Status',
-                            'Detected at',
-                            '#',
-                            'Job title',
-                            'Job ID',
-                            'Original price',
-                            'Final price',
-                            'Multiplier',
-                            'Complexity',
-                            'Job type',
-                            'Variations',
-                            'Price per variation',
-                            'Group type',
-                            'Tags',
-                        ]]
-                    }
+                    requestBody: { values: headerValues }
                 });
-
-                // Conditional formatting handled above (kept in sync even if sheet already exists).
             }
 
+            // VIEW tab (Jobs): force headers + formula-driven latest-per-Job-ID view.
+            await sheetsClient.spreadsheets.values.update({
+                spreadsheetId,
+                range: `${viewTitle}!A1:N1`,
+                valueInputOption: 'RAW',
+                requestBody: { values: headerValues }
+            });
+
+            const rawQ = quoteSheetName(rawTitle);
+            const viewFormula = `=IFERROR(SORTN(SORT(FILTER(${rawQ}!A2:N, LEN(${rawQ}!E2:E)), 2, FALSE), 9^9, 2, 5, TRUE), "")`;
+            await sheetsClient.spreadsheets.values.update({
+                spreadsheetId,
+                range: `${viewTitle}!A2:A2`,
+                valueInputOption: 'USER_ENTERED',
+                requestBody: { values: [[viewFormula]] }
+            });
+
             isReady = true;
-            console.log(`[Sheets] Logging enabled → ${sheetTitle} (spreadsheet ${spreadsheetId})`);
+            console.log(`[Sheets] Logging enabled → ${viewTitle} (view) + ${rawTitle} (raw) (spreadsheet ${spreadsheetId})`);
         } catch (e) {
             console.error(`[Sheets] Init failed: ${e.message}`);
         }
@@ -445,7 +508,7 @@ function createSheetsLogger() {
 
             await sheetsClient.spreadsheets.values.append({
                 spreadsheetId,
-                range: `${sheetTitle}!A:N`,
+                range: `${rawTitle}!A:N`,
                 valueInputOption: 'USER_ENTERED',
                 insertDataOption: 'INSERT_ROWS',
                 requestBody: { values: rows }
