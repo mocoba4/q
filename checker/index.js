@@ -543,6 +543,9 @@ async function run() {
             // Do not drop detections during an active dispatch.
             enqueuePendingJobs(validJobs);
 
+            // Log detections immediately (non-blocking). Status may be superseded later.
+            (validJobs || []).forEach(j => sheetsLogger.enqueue(j, 'detected_queued'));
+
             fireAndForgetSpotterAlert({
                 telegramMsg: `📥 Jobs detected while swarm is dispatching. Queued ${validJobs.length} jobs for next pass.`,
                 ntfyMsg: `Queued ${validJobs.length} jobs during dispatch`,
