@@ -582,18 +582,32 @@ function createSheetsLogger() {
             }).catch(() => null);
 
             const rawQ = quoteSheetName(rawTitle);
-            // Jobs view:
+            // Jobs view (compat-friendly; avoids LET):
             // - 1 row per unique Job ID (latest event wins)
             // - Ordered by the FIRST time the Job ID was discovered (MIN raw '#')
-            // - Jobs '#' column shows that first-seen number
-            const viewFormula = `=IFERROR(LET(
-raw, FILTER(${rawQ}!A2:N, LEN(${rawQ}!E2:E)),
-latest, SORTN(SORT(raw, 2, FALSE), 9^9, 2, 5, TRUE),
-mins, QUERY({TO_TEXT(${rawQ}!E2:E), ${rawQ}!C2:C}, "select Col1, min(Col2) where Col1 is not null group by Col1 label min(Col2) ''", 0),
-firstNo, IFERROR(VLOOKUP(TO_TEXT(INDEX(latest,,5)), mins, 2, FALSE), ),
-out, {INDEX(latest,,1), INDEX(latest,,2), firstNo, INDEX(latest,,4), INDEX(latest,,5), INDEX(latest,,6), INDEX(latest,,7), INDEX(latest,,8), INDEX(latest,,9), INDEX(latest,,10), INDEX(latest,,11), INDEX(latest,,12), INDEX(latest,,13), INDEX(latest,,14)},
-SORT(out, 3, TRUE)
-), "")`;
+            // - Jobs '#' column shows that first-seen number (stable)
+            //
+            // NOTE: This formula intentionally avoids LET/XLOOKUP so it works on older Sheets accounts.
+            const latestExpr = `SORTN(SORT(FILTER(${rawQ}!A2:N, LEN(${rawQ}!E2:E)), 2, FALSE), 9^9, 2, 5, TRUE)`;
+            const minsExpr = `QUERY({${rawQ}!E2:E&"", ${rawQ}!C2:C}, "select Col1, min(Col2) where Col1 is not null group by Col1 label min(Col2) ''", 0)`;
+            const firstNoExpr = `(IFERROR(VLOOKUP(INDEX(${latestExpr},,5)&"", ${minsExpr}, 2, FALSE), ))`;
+            const viewFormula = `=IFERROR(QUERY(SORT({
+${firstNoExpr},
+INDEX(${latestExpr},,1),
+INDEX(${latestExpr},,2),
+${firstNoExpr},
+INDEX(${latestExpr},,4),
+INDEX(${latestExpr},,5),
+INDEX(${latestExpr},,6),
+INDEX(${latestExpr},,7),
+INDEX(${latestExpr},,8),
+INDEX(${latestExpr},,9),
+INDEX(${latestExpr},,10),
+INDEX(${latestExpr},,11),
+INDEX(${latestExpr},,12),
+INDEX(${latestExpr},,13),
+INDEX(${latestExpr},,14)
+}, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15", 0), "")`;
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
                 range: `${viewTitle}!A2:A2`,
