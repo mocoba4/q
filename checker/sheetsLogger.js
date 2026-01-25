@@ -582,7 +582,18 @@ function createSheetsLogger() {
             }).catch(() => null);
 
             const rawQ = quoteSheetName(rawTitle);
-            const viewFormula = `=IFERROR(SORTN(SORT(FILTER(${rawQ}!A2:N, LEN(${rawQ}!E2:E)), 2, FALSE), 9^9, 2, 5, TRUE), "")`;
+            // Jobs view:
+            // - 1 row per unique Job ID (latest event wins)
+            // - Ordered by the FIRST time the Job ID was discovered (MIN raw '#')
+            // - Jobs '#' column shows that first-seen number
+            const viewFormula = `=IFERROR(LET(
+raw, FILTER(${rawQ}!A2:N, LEN(${rawQ}!E2:E)),
+latest, SORTN(SORT(raw, 2, FALSE), 9^9, 2, 5, TRUE),
+mins, QUERY({TO_TEXT(${rawQ}!E2:E), ${rawQ}!C2:C}, "select Col1, min(Col2) where Col1 is not null group by Col1 label min(Col2) ''", 0),
+firstNo, IFERROR(VLOOKUP(TO_TEXT(INDEX(latest,,5)), mins, 2, FALSE), ),
+out, {INDEX(latest,,1), INDEX(latest,,2), firstNo, INDEX(latest,,4), INDEX(latest,,5), INDEX(latest,,6), INDEX(latest,,7), INDEX(latest,,8), INDEX(latest,,9), INDEX(latest,,10), INDEX(latest,,11), INDEX(latest,,12), INDEX(latest,,13), INDEX(latest,,14)},
+SORT(out, 3, TRUE)
+), "")`;
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
                 range: `${viewTitle}!A2:A2`,
