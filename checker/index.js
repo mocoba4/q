@@ -232,7 +232,8 @@ async function processJob(agent, job) {
 
         // Triple-Retry Logic for Accept Button
         let acceptBtn = null;
-        const attempts = [0, 500, 1000]; // 0ms, 500ms, 1000ms waits
+        // First attempt after 0.3s (0.1s was too early / unreliable).
+        const attempts = [300, 500, 1000]; // 300ms, 500ms, 1000ms waits
 
         for (let i = 0; i < attempts.length; i++) {
             if (attempts[i] > 0) await page.waitForTimeout(attempts[i]);
@@ -258,9 +259,13 @@ async function processJob(agent, job) {
             acceptBtn = null;
         }
 
+        let clickedAccept = false;
+        let clickedYes = false;
+
         if (acceptBtn) {
             try { await page.bringToFront(); } catch (e) { /* ignore */ }
             await acceptBtn.first().click();
+            clickedAccept = true;
             console.log(`[Account ${agent.id}] Clicked Accept Task...`);
 
             // Handle Modal
@@ -272,40 +277,49 @@ async function processJob(agent, job) {
                 .or(page.getByRole('button', { name: 'OK' }))
                 .or(page.locator('button.cgt-button--primary:nth-child(2)'));
 
-            if (await confirmBtn.count() > 0) {
-                await confirmBtn.first().click();
-                console.log(`[Account ${agent.id}] Clicked Modal Confirmation. Verifying...`);
+            // Click "Yes" with a retry after 1s.
+            for (let yesAttempt = 0; yesAttempt < 2; yesAttempt++) {
+                if (yesAttempt === 1) await page.waitForTimeout(1000);
+                try { await page.bringToFront(); } catch (e) { /* ignore */ }
 
-                // Verification
-                try {
-                    const startUrl = page.url();
-                    // RELAXED VERIFICATION: Wait for ANY URL change or "Cancel task" button
-                    await Promise.race([
-                        page.waitForURL(url => url !== startUrl, { timeout: 10000 }),
-                        // Prefer CSS selector for Cancel Task, keep text fallback.
-                        page.waitForSelector('.cgt-button--secondary-warning > div:nth-child(1), .cgt-button--secondary-warning, button:has-text("Cancel task")', { timeout: 10000 })
-                    ]);
-
-                    const endUrl = page.url();
-                    const cancelBtn = page.locator('.cgt-button--secondary-warning > div:nth-child(1), .cgt-button--secondary-warning')
-                        .or(page.locator('button:has-text("Cancel task")'));
-
-                    if (endUrl !== startUrl || (await cancelBtn.count() > 0)) {
-                        const screenshot = await page.screenshot({ fullPage: true });
-                        // Unmasked pricing in logs for verification
-                        const rawPrice = String(job.price).split('').join(' ');
-                        const msg = `✅ Account ${agent.id} SECURED Job!\nPrice: $${job.price}\nType: ${job.isGrouped ? 'Grouped' : 'Single'}`;
-                        console.log(`[Account ${agent.id}] SUCCESS! Price: [ ${rawPrice} ]`);
-                        // FIRE AND FORGET NOTIFICATION (Parallel)
-                        sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot)
-                            .catch(err => console.error(`Background Notification Failed: ${err.message}`));
-
-                        return { ok: true, reason: 'secured' };
+                if (await confirmBtn.count() > 0) {
+                    try {
+                        await confirmBtn.first().click();
+                        clickedYes = true;
+                        console.log(`[Account ${agent.id}] Clicked Modal Confirmation (Attempt ${yesAttempt + 1}).`);
+                        break;
+                    } catch (e) {
+                        console.log(`[Account ${agent.id}] Confirm click failed (Attempt ${yesAttempt + 1}): ${e.message}`);
                     }
-                } catch (e) { console.log(`[Account ${agent.id}] Verification Failed: ${e.message}`); }
-            } else {
-                console.log(`[Account ${agent.id}] No confirmation modal found? (Or auto-accepted?)`);
+                }
             }
+
+            // SIMPLE VERIFICATION:
+            // If we successfully clicked BOTH Accept + Yes, and we are NOT redirected to
+            // https://example.invalid/modeling-requests?forbidden=true, count as taken.
+            if (clickedAccept && clickedYes) {
+                try {
+                    await page.waitForTimeout(800);
+                } catch (_) { /* ignore */ }
+
+                const endUrl = page.url();
+                const isForbidden = endUrl.includes('forbidden=true');
+                if (!isForbidden) {
+                    const screenshot = await page.screenshot({ fullPage: true });
+                    const rawPrice = String(job.price).split('').join(' ');
+                    const msg = `✅ Account ${agent.id} SECURED Job!\nPrice: $${job.price}\nType: ${job.isGrouped ? 'Grouped' : 'Single'}`;
+                    console.log(`[Account ${agent.id}] SUCCESS! Price: [ ${rawPrice} ]`);
+                    sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot)
+                        .catch(err => console.error(`Background Notification Failed: ${err.message}`));
+
+                    return { ok: true, reason: 'secured' };
+                }
+
+                console.log(`[Account ${agent.id}] FAILED: Redirected to forbidden page after Accept+Yes.`);
+                return { ok: false, reason: 'forbidden' };
+            }
+
+            console.log(`[Account ${agent.id}] No confirmation modal found/clicked. (clickedAccept=${clickedAccept}, clickedYes=${clickedYes})`);
         } else {
             console.log(`[Account ${agent.id}] Accept button not found after ${attempts.length} attempts.`);
             // "Too Late" Detection

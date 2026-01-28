@@ -172,6 +172,36 @@ function buildStatusConditionalFormattingRequests(sheetId) {
     ];
 }
 
+function buildStatusDropdownValidationRule() {
+    const allowed = [
+        'Detected (Queued)',
+        'Job taken',
+        'Failed to take job',
+        'Check Only Mode',
+        'Ignored: Capacity Full',
+        'Ignored: Low Price',
+        'Job ignored'
+    ];
+
+    return {
+        condition: {
+            type: 'ONE_OF_LIST',
+            values: allowed.map(v => ({ userEnteredValue: v }))
+        },
+        showCustomUi: true,
+        strict: true
+    };
+}
+
+function buildDetectedAtDateTimeFormat() {
+    return {
+        numberFormat: {
+            type: 'DATE_TIME',
+            pattern: 'yyyy-mm-dd hh:mm:ss'
+        }
+    };
+}
+
 function isEnabled() {
     return Boolean(process.env.GOOGLE_SHEETS_ID);
 }
@@ -549,6 +579,65 @@ function createSheetsLogger() {
 
             await syncStatusFormattingForSheet(rawSheetId);
             await syncStatusFormattingForSheet(viewSheetId);
+
+            // Ensure "Detected at" (column B) displays as a date/time instead of raw serial numbers.
+            // This fixes cases where the underlying value is a valid Sheets date but the column format is "Number".
+            async function syncDetectedAtNumberFormatForSheet(targetSheetId) {
+                const numericSheetId = Number(targetSheetId);
+                if (!Number.isFinite(numericSheetId)) return;
+
+                await sheetsClient.spreadsheets.batchUpdate({
+                    spreadsheetId,
+                    requestBody: {
+                        requests: [
+                            {
+                                repeatCell: {
+                                    range: {
+                                        sheetId: numericSheetId,
+                                        startRowIndex: 1,
+                                        endRowIndex: 10000,
+                                        startColumnIndex: 1,
+                                        endColumnIndex: 2
+                                    },
+                                    cell: {
+                                        userEnteredFormat: buildDetectedAtDateTimeFormat()
+                                    },
+                                    fields: 'userEnteredFormat.numberFormat'
+                                }
+                            }
+                        ]
+                    }
+                });
+            }
+
+            await syncDetectedAtNumberFormatForSheet(rawSheetId);
+            await syncDetectedAtNumberFormatForSheet(viewSheetId);
+
+            // Add a dropdown for Status on the RAW tab so you can manually adjust statuses if needed.
+            // (Note: the Jobs tab is a formula-driven view, so editing cells there won't persist.)
+            try {
+                await sheetsClient.spreadsheets.batchUpdate({
+                    spreadsheetId,
+                    requestBody: {
+                        requests: [
+                            {
+                                setDataValidation: {
+                                    range: {
+                                        sheetId: Number(rawSheetId),
+                                        startRowIndex: 1,
+                                        endRowIndex: 10000,
+                                        startColumnIndex: 0,
+                                        endColumnIndex: 1
+                                    },
+                                    rule: buildStatusDropdownValidationRule()
+                                }
+                            }
+                        ]
+                    }
+                });
+            } catch (e) {
+                console.error(`[Sheets] Status dropdown validation failed: ${e.message}`);
+            }
 
             // If the header row is empty, write headers and conditional formatting rules.
             // RAW tab: write headers if empty.
