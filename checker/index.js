@@ -299,7 +299,7 @@ async function processJob(agent, job) {
             // https://example.invalid/modeling-requests?forbidden=true, count as taken.
             if (clickedAccept && clickedYes) {
                 try {
-                    await page.waitForTimeout(800);
+                    await page.waitForTimeout(1000);
                 } catch (_) { /* ignore */ }
 
                 const endUrl = page.url();
