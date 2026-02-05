@@ -70,6 +70,27 @@ async function sendTelegramAlert(message, imageBuffer) {
     }
 }
 
+async function sendTelegramDocument({ caption, filename, buffer }) {
+    if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
+        console.error('Missing Telegram configuration');
+        return;
+    }
+
+    try {
+        const form = new FormData();
+        form.append('chat_id', CONFIG.telegramChatId);
+        if (caption) form.append('caption', caption);
+        form.append('document', buffer, filename || 'trace.json');
+
+        await axios.post(`https://api.telegram.org/bot${CONFIG.telegramToken}/sendDocument`, form, {
+            headers: form.getHeaders()
+        });
+        console.log('Telegram document sent.');
+    } catch (error) {
+        console.error('Failed to send Telegram document:', error.message);
+    }
+}
+
 async function sendNtfyAlert(message, imageBuffer) {
     if (!CONFIG.ntfyTopic) {
         console.log('No NTFY_TOPIC configured, skipping push notification.');
@@ -201,6 +222,275 @@ async function processJob(agent, job) {
         // Create a new page within the agent's context for each job
         page = await agent.context.newPage();
 
+        const ACCEPT_TRACE_ENABLED = /^(1|true|on|yes)$/i.test(process.env.ACCEPT_TRACE || '');
+        const ACCEPT_TRACE_SEND_ON_FAILURE = (() => {
+            if (!ACCEPT_TRACE_ENABLED) return false;
+            const v = process.env.ACCEPT_TRACE_SEND_ON_FAILURE;
+            if (v === undefined || v === null || String(v).trim() === '') return true; // backward-compatible default
+            return /^(1|true|on|yes)$/i.test(String(v));
+        })();
+        const ACCEPT_TRACE_SEND_ON_SUCCESS = (() => {
+            if (!ACCEPT_TRACE_ENABLED) return false;
+            return /^(1|true|on|yes)$/i.test(process.env.ACCEPT_TRACE_SEND_ON_SUCCESS || '');
+        })();
+        const ACCEPT_TRACE_SAVE_UNREDACTED_LOCAL = (() => {
+            if (!ACCEPT_TRACE_ENABLED) return false;
+            return /^(1|true|on|yes)$/i.test(process.env.ACCEPT_TRACE_SAVE_UNREDACTED_LOCAL || '');
+        })();
+        const acceptTrace = [];
+        const traceStart = Date.now();
+
+        const redactUrlForLog = (u) => {
+            try {
+                // Keep the existing masking-bypass convention for URLs
+                return String(u || '').replace('https://', 'https:// ');
+            } catch (_) {
+                return '';
+            }
+        };
+
+        const redactHeadersForLog = (headers) => {
+            const out = {};
+            const h = headers || {};
+            for (const [rawKey, rawVal] of Object.entries(h)) {
+                const key = String(rawKey || '').toLowerCase();
+                const val = String(rawVal ?? '');
+
+                if (key === 'cookie') {
+                    // Only keep cookie names, never values
+                    const names = val.split(';').map(s => s.trim().split('=')[0]).filter(Boolean);
+                    out[rawKey] = `[redacted cookies: ${names.join(', ')}]`;
+                    continue;
+                }
+
+                if (key === 'authorization') {
+                    out[rawKey] = '[redacted authorization]';
+                    continue;
+                }
+
+                if (key.includes('csrf') || key.includes('token') || key.includes('auth') || key.includes('session')) {
+                    out[rawKey] = `[redacted ${key} len=${val.length}]`;
+                    continue;
+                }
+
+                // Keep small headers; truncate the rest
+                out[rawKey] = val.length > 200 ? `${val.slice(0, 200)}…(trunc)` : val;
+            }
+            return out;
+        };
+
+        const redactPostDataForLog = (postData) => {
+            if (!postData) return undefined;
+            const s = String(postData);
+            // Heuristic: redact obvious token-like fields in JSON-ish bodies
+            const redacted = s
+                .replace(/"(token|csrf|auth|session|cookie|authorization)"\s*:\s*"[^"]*"/gi, '"$1":"[redacted]"')
+                .replace(/(token|csrf|auth|session|cookie|authorization)=([^&\s]+)/gi, '$1=[redacted]');
+            return redacted.length > 2000 ? `${redacted.slice(0, 2000)}…(trunc)` : redacted;
+        };
+
+        const pushTrace = (entry) => {
+            acceptTrace.push(entry);
+            // Keep last N entries to avoid huge payloads
+            if (acceptTrace.length > 250) acceptTrace.shift();
+        };
+
+        const attachAcceptTrace = () => {
+            if (!ACCEPT_TRACE_ENABLED) return;
+
+            page.on('request', (req) => {
+                try {
+                    const rt = req.resourceType();
+                    const method = req.method();
+                    // Accept/confirm can be XHR/fetch or sometimes a form/navigation POST.
+                    // Capture all XHR/fetch, plus any non-GET regardless of resource type.
+                    if (rt !== 'xhr' && rt !== 'fetch' && method === 'GET') return;
+                    pushTrace({
+                        t: Date.now() - traceStart,
+                        kind: 'request',
+                        method,
+                        url: redactUrlForLog(req.url()),
+                        resourceType: rt,
+                        headers: redactHeadersForLog(req.headers()),
+                        postData: redactPostDataForLog(req.postData())
+                    });
+                } catch (_) {
+                    // ignore
+                }
+            });
+
+            page.on('response', async (resp) => {
+                try {
+                    const req = resp.request();
+                    const rt = req.resourceType();
+                    const method = req.method();
+                    if (rt !== 'xhr' && rt !== 'fetch' && method === 'GET') return;
+
+                    const url = resp.url();
+                    const status = resp.status();
+                    const shouldCaptureBody = status >= 400 || /accept|confirm|forbidden|request|brief/i.test(url);
+
+                    let bodySnippet;
+                    if (shouldCaptureBody) {
+                        try {
+                            const txt = await resp.text();
+                            const safeTxt = String(txt || '').replace(/\s+/g, ' ').trim();
+                            bodySnippet = safeTxt.length > 1200 ? `${safeTxt.slice(0, 1200)}…(trunc)` : safeTxt;
+                        } catch (_) {
+                            bodySnippet = '[unavailable]';
+                        }
+                    }
+
+                    pushTrace({
+                        t: Date.now() - traceStart,
+                        kind: 'response',
+                        method,
+                        url: redactUrlForLog(url),
+                        status,
+                        bodySnippet
+                    });
+                } catch (_) {
+                    // ignore
+                }
+            });
+        };
+
+        attachAcceptTrace();
+
+        // If user explicitly enabled unredacted local saving, we capture a parallel raw trace.
+        const acceptTraceRaw = ACCEPT_TRACE_SAVE_UNREDACTED_LOCAL ? [] : null;
+        const pushTraceRaw = (entry) => {
+            if (!acceptTraceRaw) return;
+            acceptTraceRaw.push(entry);
+            if (acceptTraceRaw.length > 250) acceptTraceRaw.shift();
+        };
+
+        if (ACCEPT_TRACE_SAVE_UNREDACTED_LOCAL) {
+            page.on('request', (req) => {
+                try {
+                    const rt = req.resourceType();
+                    if (rt !== 'xhr' && rt !== 'fetch') return;
+                    pushTraceRaw({
+                        t: Date.now() - traceStart,
+                        kind: 'request',
+                        method: req.method(),
+                        url: redactUrlForLog(req.url()),
+                        resourceType: rt,
+                        headers: req.headers(),
+                        postData: req.postData()
+                    });
+                } catch (_) {
+                    // ignore
+                }
+            });
+
+            page.on('response', async (resp) => {
+                try {
+                    const req = resp.request();
+                    const rt = req.resourceType();
+                    if (rt !== 'xhr' && rt !== 'fetch') return;
+                    let bodySnippet;
+                    try {
+                        const txt = await resp.text();
+                        const safeTxt = String(txt || '').replace(/\s+/g, ' ').trim();
+                        bodySnippet = safeTxt.length > 2000 ? `${safeTxt.slice(0, 2000)}…(trunc)` : safeTxt;
+                    } catch (_) {
+                        bodySnippet = '[unavailable]';
+                    }
+                    pushTraceRaw({
+                        t: Date.now() - traceStart,
+                        kind: 'response',
+                        method: req.method(),
+                        url: redactUrlForLog(resp.url()),
+                        status: resp.status(),
+                        bodySnippet
+                    });
+                } catch (_) {
+                    // ignore
+                }
+            });
+        }
+
+        const maybeSendAcceptTrace = async ({ reason, when }) => {
+            if (!ACCEPT_TRACE_ENABLED) return;
+            const shouldSend = (when === 'success') ? ACCEPT_TRACE_SEND_ON_SUCCESS : ACCEPT_TRACE_SEND_ON_FAILURE;
+            if (!shouldSend) return;
+
+            if (!acceptTrace || acceptTrace.length === 0) {
+                console.warn(`[Account ${agent.id}] Accept trace enabled for ${when}, but no matching requests were captured.`);
+                return;
+            }
+
+            const displayUrl = (job?.url || '').replace('https://', 'https:// ');
+            const tracePayload = {
+                capturedAt: new Date().toISOString(),
+                accountId: agent.id,
+                jobId: job?.id,
+                jobUrl: displayUrl,
+                when,
+                reason,
+                note: 'Sensitive headers/cookies/tokens are redacted. Use this to identify endpoints + required fields.',
+                trace: acceptTrace
+            };
+
+            const buf = Buffer.from(JSON.stringify(tracePayload, null, 2), 'utf8');
+            const fname = `accept_trace_${when}_acc${agent.id}_job${job?.id || 'unknown'}_${Date.now()}.json`;
+            await sendTelegramDocument({
+                caption: `🧾 Accept trace (redacted)\n${when.toUpperCase()} | Account ${agent.id} | Job ${job?.id || 'unknown'}\nReason: ${reason}`,
+                filename: fname,
+                buffer: buf
+            });
+
+            if (ACCEPT_TRACE_SAVE_UNREDACTED_LOCAL && acceptTraceRaw && acceptTraceRaw.length > 0) {
+                try {
+                    const tracesDir = path.join(__dirname, 'accept_traces');
+                    fs.mkdirSync(tracesDir, { recursive: true });
+                    const localName = `accept_trace_${when}_UNREDACTED_acc${agent.id}_job${job?.id || 'unknown'}_${Date.now()}.json`;
+                    const localPath = path.join(tracesDir, localName);
+                    const localPayload = {
+                        capturedAt: new Date().toISOString(),
+                        accountId: agent.id,
+                        jobId: job?.id,
+                        jobUrl: displayUrl,
+                        when,
+                        reason,
+                        note: 'UNREDACTED LOCAL TRACE: contains sensitive auth/cookies/tokens. Do not share.',
+                        trace: acceptTraceRaw
+                    };
+                    fs.writeFileSync(localPath, JSON.stringify(localPayload, null, 2), 'utf8');
+                    console.log(`[Account ${agent.id}] Saved unredacted accept trace locally: ${localPath}`);
+                } catch (e) {
+                    console.error(`[Account ${agent.id}] Failed to save unredacted accept trace locally: ${e.message}`);
+                }
+            }
+        };
+
+        const notifyFailure = async (reason) => {
+            try {
+                // Hack to bypass GitHub Secret masking (insert space after https://)
+                const displayUrl = (job?.url || '').replace('https://', 'https:// ');
+                const rawPrice = String(job?.price ?? '').split('').join(' ');
+                const title = (job?.title ? `\nTitle: ${job.title}` : '');
+
+                let screenshot;
+                try {
+                    screenshot = await page.screenshot({ fullPage: true });
+                } catch (_) {
+                    screenshot = undefined;
+                }
+
+                const msg = `❌ Account ${agent.id} FAILED to take job\nReason: ${reason}${title}\nPrice: $${job?.price}\nType: ${job?.isGrouped ? 'Grouped' : 'Single'}\nURL: ${displayUrl}\n(Price raw: [ ${rawPrice} ])`;
+                // Fire-and-forget so failures don't stall the swarm.
+                sendDualAlert(msg, `Job take failed: ${reason}`, screenshot)
+                    .catch(err => console.error(`Background Failure Notification Failed: ${err.message}`));
+
+                // Optional: Send redacted XHR/fetch trace to Telegram for building a future direct-API flow.
+                maybeSendAcceptTrace({ reason, when: 'failure' }).catch(() => {});
+            } catch (_) {
+                // Never let notifications break the worker.
+            }
+        };
+
         // --- VISIBILITY SPOOFING ---
         // Force the page to believe it's always visible and active
         await page.addInitScript(() => {
@@ -312,14 +602,22 @@ async function processJob(agent, job) {
                     sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot)
                         .catch(err => console.error(`Background Notification Failed: ${err.message}`));
 
+                    // Optional: capture the successful accept/confirm request sequence.
+                    maybeSendAcceptTrace({ reason: 'secured', when: 'success' }).catch(() => {});
+
                     return { ok: true, reason: 'secured' };
                 }
 
                 console.log(`[Account ${agent.id}] FAILED: Redirected to forbidden page after Accept+Yes.`);
+                await notifyFailure('redirected_forbidden_after_accept_yes');
                 return { ok: false, reason: 'forbidden' };
             }
 
             console.log(`[Account ${agent.id}] No confirmation modal found/clicked. (clickedAccept=${clickedAccept}, clickedYes=${clickedYes})`);
+            // If we clicked Accept but couldn't complete the modal flow, send a screenshot for debugging.
+            if (clickedAccept && !clickedYes) {
+                await notifyFailure('confirm_modal_missing_or_not_clicked');
+            }
         } else {
             console.log(`[Account ${agent.id}] Accept button not found after ${attempts.length} attempts.`);
             // "Too Late" Detection
@@ -328,10 +626,15 @@ async function processJob(agent, job) {
                 console.log(`[Account ${agent.id}] FAILED: Job already taken by another user ("Too Late" message found).`);
             } else {
                 console.log(`[Account ${agent.id}] FAILED: Button missing and no "Too Late" message found. (Site lag or layout change?)`);
+                // Key debug case: capture the page so we can see what's on-screen.
+                await notifyFailure('accept_button_missing_no_too_late_message');
             }
         }
     } catch (e) {
         console.error(`[Account ${agent.id}] Error processing job ${job.url}: ${e.message}`);
+        try {
+            if (page) await notifyFailure(`exception: ${e.message}`);
+        } catch (_) { /* ignore */ }
     } finally {
         if (page) await page.close();
     }
