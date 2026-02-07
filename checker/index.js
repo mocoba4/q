@@ -798,7 +798,8 @@ async function run() {
     }));
 
     // --- MAIN LOOP ---
-    const Agent1 = agents[0]; // The Spotter
+    const Agent1 = agents[0]; // Primary Spotter (Account 1)
+    const Agent2 = agents.length >= 2 ? agents[1] : null; // Secondary Spotter (Account 2)
     const LOOP_DURATION = 6 * 60 * 60 * 1000;
     const MIN_CYCLE_DURATION = CONFIG.checkInterval * 1000;
     const startTime = Date.now();
@@ -1057,82 +1058,90 @@ async function run() {
     let lastSniperJobs = [];
 
     // --- SNIPER ENGINE (Option 2) ---
-    // We listen to the network to catch jobs BEFORE the browser even finishes drawing them.
-    Agent1.page.on('response', async response => {
-        const url = response.url();
-        if (url.includes('available-requests') && response.status() === 200) {
-            try {
-                const json = await response.json();
-                const rawJobs = json.data || [];
+    // Listen to the network to catch jobs BEFORE the browser even finishes drawing them.
+    // Dual-spotter mode: attach to Account 1 and Account 2 to reduce missed jobs between reloads.
+    const attachSniperToSpotter = (spotterAgent) => {
+        if (!spotterAgent || !spotterAgent.page) return;
 
-                const parsed = rawJobs.map(item => {
-                    const attr = item.attributes || {};
-                    const isGrouped = attr.partOfGroupOfRequests === true;
+        spotterAgent.page.on('response', async response => {
+            const url = response.url();
+            if (url.includes('available-requests') && response.status() === 200) {
+                try {
+                    const json = await response.json();
+                    const rawJobs = json.data || [];
 
-                    const jobUrl = `${CONFIG.url}/${item.id}/brief`;
-                    const price = getJobPriceFromAttributes(attr);
-                    const originalPrice = getJobOriginalPriceFromAttributes(attr);
-                    const multiplier = getJobMultiplierFromAttributes(attr);
-                    const complexity = (attr.complexity ?? attr.groupData?.complexity) ?? '';
-                    const title = attr.title ?? '';
-                    const groupType = attr.groupType ?? '';
-                    const tags = Array.isArray(attr.tags) ? attr.tags : [];
+                    const parsed = rawJobs.map(item => {
+                        const attr = item.attributes || {};
+                        const isGrouped = attr.partOfGroupOfRequests === true;
 
-                    // Unmasked pricing in logs for Sniper verification
-                    const rawPriceLog = String(price).split('').join(' ');
-                    console.log(`[Sniper] Detected Job ${item.id} | Price: [ ${rawPriceLog} ]`);
+                        const jobUrl = `${CONFIG.url}/${item.id}/brief`;
+                        const price = getJobPriceFromAttributes(attr);
+                        const originalPrice = getJobOriginalPriceFromAttributes(attr);
+                        const multiplier = getJobMultiplierFromAttributes(attr);
+                        const complexity = (attr.complexity ?? attr.groupData?.complexity) ?? '';
+                        const title = attr.title ?? '';
+                        const groupType = attr.groupType ?? '';
+                        const tags = Array.isArray(attr.tags) ? attr.tags : [];
 
-                    const variations = isGrouped ? (attr.groupData?.size || 1) : 1;
+                        // Unmasked pricing in logs for Sniper verification
+                        const rawPriceLog = String(price).split('').join(' ');
+                        console.log(`[Sniper A${spotterAgent.id}] Detected Job ${item.id} | Price: [ ${rawPriceLog} ]`);
 
-                    return {
-                        id: item.id,
-                        url: jobUrl,
-                        price: price,
-                        finalPrice: price,
-                        originalPrice,
-                        multiplier,
-                        complexity,
-                        title,
-                        groupType,
-                        tags,
-                        isGrouped: isGrouped,
-                        variations,
-                        pricePerUnit: isGrouped ? (price / variations) : price
-                    };
-                });
+                        const variations = isGrouped ? (attr.groupData?.size || 1) : 1;
 
-                lastSniperJobs = parsed;
-                if (parsed.length > 0) {
-                    console.log(`[Sniper] 🎯 Captured ${parsed.length} jobs via API.`);
-                }
-
-                // Flood guard: if too many jobs appear at once, switch to check-only for the rest of this run.
-                if (!forcedCheckOnly && MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY > 0 && parsed.length > MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY) {
-                    forcedCheckOnly = true;
-                    pendingJobsById.clear();
-                    console.error(`\n🚨 [Flood Guard] Detected ${parsed.length} jobs in a single check (> ${MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY}). Switching to CHECK ONLY for the rest of the run.`);
-
-                    fireAndForgetSpotterAlert({
-                        telegramMsg: `🚨 Flood Guard: ${parsed.length} jobs detected at once. Switching to CHECK ONLY (no auto-accept) for the rest of the run.`,
-                        ntfyMsg: `Flood Guard: ${parsed.length} jobs → check-only for rest of run`,
-                        cooldownMs: 0,
-                        getLastAt: () => 0,
-                        setLastAt: () => {}
+                        return {
+                            id: item.id,
+                            url: jobUrl,
+                            price: price,
+                            finalPrice: price,
+                            originalPrice,
+                            multiplier,
+                            complexity,
+                            title,
+                            groupType,
+                            tags,
+                            isGrouped: isGrouped,
+                            variations,
+                            pricePerUnit: isGrouped ? (price / variations) : price
+                        };
                     });
-                }
 
-                // Always allow re-triggering accepts; Sheets logging has its own dedupe.
-                if (parsed.length > 0) {
-                    triggerSwarm(parsed).catch(err => console.error('Swarm Trigger Error:', err.message));
+                    lastSniperJobs = parsed;
+                    if (parsed.length > 0) {
+                        console.log(`[Sniper A${spotterAgent.id}] 🎯 Captured ${parsed.length} jobs via API.`);
+                    }
+
+                    // Flood guard: if too many jobs appear at once, switch to check-only for the rest of this run.
+                    if (!forcedCheckOnly && MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY > 0 && parsed.length > MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY) {
+                        forcedCheckOnly = true;
+                        pendingJobsById.clear();
+                        console.error(`\n🚨 [Flood Guard] Detected ${parsed.length} jobs in a single check (> ${MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY}). Switching to CHECK ONLY for the rest of the run.`);
+
+                        fireAndForgetSpotterAlert({
+                            telegramMsg: `🚨 Flood Guard: ${parsed.length} jobs detected at once. Switching to CHECK ONLY (no auto-accept) for the rest of the run.`,
+                            ntfyMsg: `Flood Guard: ${parsed.length} jobs → check-only for rest of run`,
+                            cooldownMs: 0,
+                            getLastAt: () => 0,
+                            setLastAt: () => {}
+                        });
+                    }
+
+                    // Always allow re-triggering accepts; Sheets logging has its own dedupe.
+                    if (parsed.length > 0) {
+                        triggerSwarm(parsed).catch(err => console.error('Swarm Trigger Error:', err.message));
+                    }
+                } catch (e) {
+                    // Ignore parse errors if body is not JSON or empty
                 }
-            } catch (e) {
-                // Ignore parse errors if body is not JSON or empty
+            } else if (url.includes('available-requests') && (response.status() === 403 || response.status() === 429)) {
+                console.error(`\n🚨 [Sniper Alert] POTENTIAL SOFT BAN detected (HTTP ${response.status()}) on Account ${spotterAgent.id}.`);
+                console.error('The server is blocking our check requests. Recommend stopping or increasing wait time.\n');
             }
-        } else if (url.includes('available-requests') && (response.status() === 403 || response.status() === 429)) {
-            console.error(`\n🚨 [Sniper Alert] POTENTIAL SOFT BAN detected (HTTP ${response.status()}).`);
-            console.error('The server is blocking our check requests. Recommend stopping or increasing wait time.\n');
-        }
-    });
+        });
+    };
+
+    attachSniperToSpotter(Agent1);
+    if (!CONFIG.checkOnly && Agent2) attachSniperToSpotter(Agent2);
 
     try {
         while (keepRunning) {
@@ -1144,20 +1153,26 @@ async function run() {
             }
 
             try {
-                // 1. Refresh Spotter (Agent 1)
-                if (Agent1.page.url().includes(CONFIG.url)) {
-                    console.log('[Agent 1] Reloading page...');
-                    await Agent1.page.reload({ waitUntil: 'networkidle' });
+                // Dual-spotter check cadence: split CHECK_INTERVAL across Account 1 + Account 2.
+                // This yields: A1 check, wait half-interval, A2 check, wait half-interval, repeat.
+                const spotters = (!CONFIG.checkOnly && Agent2) ? [Agent1, Agent2] : [Agent1];
+                const subCycleMs = Math.max(500, Math.floor(MIN_CYCLE_DURATION / spotters.length));
+                const activeSpotter = spotters[(iterations - 1) % spotters.length];
+
+                // 1. Refresh active Spotter
+                if (activeSpotter.page.url().includes(CONFIG.url)) {
+                    console.log(`[Agent ${activeSpotter.id}] Reloading page...`);
+                    await activeSpotter.page.reload({ waitUntil: 'networkidle' });
                 } else {
-                    console.log('[Agent 1] Navigating to target...');
-                    await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                    console.log(`[Agent ${activeSpotter.id}] Navigating to target...`);
+                    await activeSpotter.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
                 }
 
-                // 2. Check for "No Jobs" Phrase
-                console.log('[Agent 1] Checking for target phrase...');
+                // 2. Check for "No Jobs" Phrase (best-effort; Sniper drives real detection)
+                console.log(`[Agent ${activeSpotter.id}] Checking for target phrase...`);
                 let phraseFound = false;
                 try {
-                    const phraseLocator = Agent1.page.getByText(CONFIG.targetPhrase);
+                    const phraseLocator = activeSpotter.page.getByText(CONFIG.targetPhrase);
                     await phraseLocator.waitFor({ state: 'visible', timeout: 3000 });
                     phraseFound = true;
                 } catch (e) {
@@ -1166,21 +1181,21 @@ async function run() {
 
                 if (phraseFound) {
                     const elapsed = Date.now() - cycleStart;
-                    const waitTime = Math.max(0, MIN_CYCLE_DURATION - elapsed);
-                    console.log(`✅ Phrase FOUND (No jobs). Waiting ${(waitTime / 1000).toFixed(1)}s to complete 20s cycle...`);
-                    await Agent1.page.waitForTimeout(waitTime);
+                    const waitTime = Math.max(0, subCycleMs - elapsed);
+                    console.log(`✅ Phrase FOUND (No jobs). Waiting ${(waitTime / 1000).toFixed(1)}s to complete sub-cycle...`);
+                    await activeSpotter.page.waitForTimeout(waitTime);
                 } else {
                     // Logic already triggered by JSON or phrase is missing (loading?)
                     if (isDispatching) {
                         console.log('⏳ Swarm attack currently in progress (Event-Triggered). Waiting for completion...');
-                        while (isDispatching) await Agent1.page.waitForTimeout(500);
+                        while (isDispatching) await activeSpotter.page.waitForTimeout(500);
                     } else {
                         console.log('❌ Phrase NOT FOUND but no event triggered. (Server lag?). Waiting for next cycle.');
                     }
 
                     const elapsed = Date.now() - cycleStart;
-                    const waitTime = Math.max(0, MIN_CYCLE_DURATION - elapsed);
-                    await Agent1.page.waitForTimeout(waitTime);
+                    const waitTime = Math.max(0, subCycleMs - elapsed);
+                    await activeSpotter.page.waitForTimeout(waitTime);
                 }
 
             } catch (innerError) {
