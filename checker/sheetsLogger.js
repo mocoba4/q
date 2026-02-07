@@ -288,6 +288,7 @@ function createSheetsLogger() {
                 '=ROW()-1',
                 safeString(job.title),
                 safeString(job.id),
+                safeString(job.uid ?? ''),
                 safeString(job.originalPrice ?? ''),
                 safeString(finalPrice),
                 safeString(job.multiplier ?? ''),
@@ -368,6 +369,7 @@ function createSheetsLogger() {
                 '#',
                 'Job title',
                 'Job ID',
+                'UID',
                 'Original price',
                 'Final price',
                 'Multiplier',
@@ -381,16 +383,16 @@ function createSheetsLogger() {
 
             // --- ONE-TIME MIGRATION (legacy Jobs -> raw tab) ---
             // If the raw tab is empty, copy any existing rows from the Jobs tab into it once.
-            // We mark completion in raw!O1 so this won't repeat on GitHub Actions restarts.
+            // We mark completion in raw!Z1 so this won't repeat on GitHub Actions restarts.
             try {
                 const [markerRes, rawPeekRes] = await Promise.all([
                     sheetsClient.spreadsheets.values.get({
                         spreadsheetId,
-                        range: `${rawTitle}!O1:O1`
+                        range: `${rawTitle}!Z1:Z1`
                     }).catch(() => null),
                     sheetsClient.spreadsheets.values.get({
                         spreadsheetId,
-                        range: `${rawTitle}!A1:N3`
+                        range: `${rawTitle}!A1:O3`
                     }).catch(() => null)
                 ]);
 
@@ -421,7 +423,7 @@ function createSheetsLogger() {
                             // Ensure raw headers exist before appending.
                             await sheetsClient.spreadsheets.values.update({
                                 spreadsheetId,
-                                range: `${rawTitle}!A1:N1`,
+                                range: `${rawTitle}!A1:O1`,
                                 valueInputOption: 'RAW',
                                 requestBody: { values: headerValues }
                             });
@@ -434,7 +436,7 @@ function createSheetsLogger() {
                             if (normalized.length > 0) {
                                 await sheetsClient.spreadsheets.values.append({
                                     spreadsheetId,
-                                    range: `${rawTitle}!A:N`,
+                                    range: `${rawTitle}!A:O`,
                                     valueInputOption: 'USER_ENTERED',
                                     insertDataOption: 'INSERT_ROWS',
                                     requestBody: { values: normalized }
@@ -443,7 +445,7 @@ function createSheetsLogger() {
                                 // Mark migration done.
                                 await sheetsClient.spreadsheets.values.update({
                                     spreadsheetId,
-                                    range: `${rawTitle}!O1:O1`,
+                                    range: `${rawTitle}!Z1:Z1`,
                                     valueInputOption: 'RAW',
                                     requestBody: { values: [['migrated_from_jobs_v1']] }
                                 });
@@ -531,6 +533,49 @@ function createSheetsLogger() {
                     console.log('[Sheets] Added "Detected at" column at B.');
                 } catch (e) {
                     console.error(`[Sheets] Detected-at column migration failed: ${e.message}`);
+                }
+            }
+
+            // Ensure we have a UID column right after Job ID.
+            // If missing, insert it at index 5 (column F) and set the header.
+            // This keeps Job ID in column E for compatibility.
+            const headerScanRes3 = await sheetsClient.spreadsheets.values.get({
+                spreadsheetId,
+                range: `${rawTitle}!A1:Z1`
+            }).catch(() => null);
+            const headerScanRow3 = headerScanRes3?.data?.values?.[0] || [];
+            const uidIndex = headerScanRow3.findIndex(v => safeString(v).trim() === 'UID');
+            if (uidIndex === -1) {
+                try {
+                    await sheetsClient.spreadsheets.batchUpdate({
+                        spreadsheetId,
+                        requestBody: {
+                            requests: [
+                                {
+                                    insertDimension: {
+                                        range: {
+                                            sheetId: rawSheetId,
+                                            dimension: 'COLUMNS',
+                                            startIndex: 5,
+                                            endIndex: 6
+                                        },
+                                        inheritFromBefore: false
+                                    }
+                                }
+                            ]
+                        }
+                    });
+
+                    await sheetsClient.spreadsheets.values.update({
+                        spreadsheetId,
+                        range: `${rawTitle}!F1:F1`,
+                        valueInputOption: 'RAW',
+                        requestBody: { values: [['UID']] }
+                    });
+
+                    console.log('[Sheets] Added "UID" column at F.');
+                } catch (e) {
+                    console.error(`[Sheets] UID column migration failed: ${e.message}`);
                 }
             }
 
@@ -643,14 +688,14 @@ function createSheetsLogger() {
             // RAW tab: write headers if empty.
             const rawHeaderRes = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
-                range: `${rawTitle}!A1:N1`
+                range: `${rawTitle}!A1:O1`
             }).catch(() => null);
 
             const rawHeaderRow = rawHeaderRes?.data?.values?.[0] || [];
             if (rawHeaderRow.length === 0) {
                 await sheetsClient.spreadsheets.values.update({
                     spreadsheetId,
-                    range: `${rawTitle}!A1:N1`,
+                    range: `${rawTitle}!A1:O1`,
                     valueInputOption: 'RAW',
                     requestBody: { values: headerValues }
                 });
@@ -659,7 +704,7 @@ function createSheetsLogger() {
             // VIEW tab (Jobs): force headers + formula-driven latest-per-Job-ID view.
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
-                range: `${viewTitle}!A1:N1`,
+                range: `${viewTitle}!A1:O1`,
                 valueInputOption: 'RAW',
                 requestBody: { values: headerValues }
             });
@@ -677,7 +722,7 @@ function createSheetsLogger() {
             // - Jobs '#' column shows that first-seen number (stable)
             //
             // NOTE: This formula intentionally avoids LET/XLOOKUP so it works on older Sheets accounts.
-            const latestExpr = `SORTN(SORT(FILTER(${rawQ}!A2:N, LEN(${rawQ}!E2:E)), 2, FALSE), 9^9, 2, 5, TRUE)`;
+            const latestExpr = `SORTN(SORT(FILTER(${rawQ}!A2:O, LEN(${rawQ}!E2:E)), 2, FALSE), 9^9, 2, 5, TRUE)`;
             const minsExpr = `QUERY({${rawQ}!E2:E&"", ${rawQ}!C2:C}, "select Col1, min(Col2) where Col1 is not null group by Col1 label min(Col2) ''", 0)`;
             const firstNoExpr = `(IFERROR(VLOOKUP(INDEX(${latestExpr},,5)&"", ${minsExpr}, 2, FALSE), ))`;
             const viewFormula = `=IFERROR(QUERY(SORT({
@@ -695,13 +740,35 @@ INDEX(${latestExpr},,10),
 INDEX(${latestExpr},,11),
 INDEX(${latestExpr},,12),
 INDEX(${latestExpr},,13),
-INDEX(${latestExpr},,14)
+INDEX(${latestExpr},,14),
+INDEX(${latestExpr},,15)
 }, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15", 0), "")`;
+
+            // Updated select to include UID (15 columns total, Col2..Col16).
+            // (We keep the old string-building style for maximum compatibility.)
+            const viewFormula2 = `=IFERROR(QUERY(SORT({
+${firstNoExpr},
+INDEX(${latestExpr},,1),
+INDEX(${latestExpr},,2),
+${firstNoExpr},
+INDEX(${latestExpr},,4),
+INDEX(${latestExpr},,5),
+INDEX(${latestExpr},,6),
+INDEX(${latestExpr},,7),
+INDEX(${latestExpr},,8),
+INDEX(${latestExpr},,9),
+INDEX(${latestExpr},,10),
+INDEX(${latestExpr},,11),
+INDEX(${latestExpr},,12),
+INDEX(${latestExpr},,13),
+INDEX(${latestExpr},,14),
+INDEX(${latestExpr},,15)
+}, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16", 0), "")`;
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
                 range: `${viewTitle}!A2:A2`,
                 valueInputOption: 'USER_ENTERED',
-                requestBody: { values: [[viewFormula]] }
+                requestBody: { values: [[viewFormula2]] }
             });
 
             isReady = true;
@@ -727,7 +794,7 @@ INDEX(${latestExpr},,14)
 
             await sheetsClient.spreadsheets.values.append({
                 spreadsheetId,
-                range: `${rawTitle}!A:N`,
+                range: `${rawTitle}!A:O`,
                 valueInputOption: 'USER_ENTERED',
                 insertDataOption: 'INSERT_ROWS',
                 requestBody: { values: rows }
