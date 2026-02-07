@@ -1082,6 +1082,7 @@ async function run() {
                         const title = attr.title ?? '';
                         const groupType = attr.groupType ?? '';
                         const tags = Array.isArray(attr.tags) ? attr.tags : [];
+                        const uid = attr.uid ?? '';
 
                         // Unmasked pricing in logs for Sniper verification
                         const rawPriceLog = String(price).split('').join(' ');
@@ -1092,6 +1093,7 @@ async function run() {
                         return {
                             id: item.id,
                             url: jobUrl,
+                            uid,
                             price: price,
                             finalPrice: price,
                             originalPrice,
