@@ -3,6 +3,7 @@ node_modules/
 .DS_Store
 checker/session.json
 checker/accept_traces/
+checker/Accept trace/
 Instruction file.txt
 
 # Analysis files

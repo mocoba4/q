@@ -151,6 +151,20 @@ const parseCapacity = (str) => {
     };
 };
 
+const isTruthyEnv = (v) => /^(1|true|on|yes)$/i.test(String(v || '').trim());
+const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
+
+const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, ms || 0)));
+
+function getNuclearDelayMs() {
+    const min = parseInt(process.env.NUCLEAR_ACCEPT_DELAY_MIN_MS || '50', 10);
+    const max = parseInt(process.env.NUCLEAR_ACCEPT_DELAY_MAX_MS || '100', 10);
+    const minMs = Number.isFinite(min) ? Math.max(0, min) : 50;
+    const maxMs = Number.isFinite(max) ? Math.max(minMs, max) : Math.max(minMs, 100);
+    if (maxMs <= minMs) return minMs;
+    return minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
+}
+
 async function getCapacity(page) {
     try {
         // Hover over the "Eye" icon to reveal limits
@@ -215,8 +229,107 @@ function getJobMultiplierFromAttributes(attributes) {
     return (isGrouped ? (groupedMultiplier ?? itemMultiplier) : itemMultiplier) ?? '';
 }
 
+async function getCsrfTokenForAgent(agent) {
+    try {
+        if (agent && agent.csrfToken) return agent.csrfToken;
+        const page = agent?.page;
+        if (!page) return '';
+
+        // Most Rails apps expose CSRF in a meta tag.
+        let token = '';
+        try {
+            token = await page.evaluate(() => {
+                const el = document.querySelector('meta[name="csrf-token"]');
+                return (el && el.getAttribute('content')) || '';
+            });
+        } catch (_) {
+            token = '';
+        }
+
+        if (!token) {
+            // Best-effort: refresh the parked page and try again.
+            try {
+                await page.reload({ waitUntil: 'domcontentloaded' });
+                token = await page.evaluate(() => {
+                    const el = document.querySelector('meta[name="csrf-token"]');
+                    return (el && el.getAttribute('content')) || '';
+                });
+            } catch (_) {
+                token = '';
+            }
+        }
+
+        if (token && agent) agent.csrfToken = token;
+        return token || '';
+    } catch (_) {
+        return '';
+    }
+}
+
+async function processJobNuclear(agent, job) {
+    try {
+        const origin = new URL(CONFIG.url).origin;
+        const acceptUrl = `${origin}/modeling-requests/${encodeURIComponent(String(job.id))}/update-status?status=accepted`;
+
+        const roundDeadline = job?.roundDeadline || job?.nextRoundDeadline || '';
+        if (!roundDeadline) {
+            console.error(`[Account ${agent.id}] Nuclear accept skipped: missing round_deadline for job ${job?.id}`);
+            return { ok: false, reason: 'missing_round_deadline' };
+        }
+
+        const csrfToken = await getCsrfTokenForAgent(agent);
+        if (!csrfToken) {
+            console.error(`[Account ${agent.id}] Nuclear accept skipped: missing x-csrf-token for job ${job?.id}`);
+            return { ok: false, reason: 'missing_csrf' };
+        }
+
+        const displayUrl = (job?.url || '').replace('https://', 'https:// ');
+        console.log(`[Account ${agent.id}] ⚡ Nuclear accept: ${displayUrl}`);
+
+        const resp = await agent.context.request.post(acceptUrl, {
+            headers: {
+                'accept': 'application/json, text/plain, */*',
+                'content-type': 'application/json',
+                'origin': origin,
+                'referer': job.url,
+                'x-csrf-token': csrfToken
+            },
+            data: { round_deadline: roundDeadline }
+        });
+
+        const status = resp.status();
+        if (status === 200) {
+            const rawPrice = String(job?.price ?? '').split('').join(' ');
+            console.log(`[Account ${agent.id}] ✅ Nuclear accept SUCCESS (HTTP 200). Price: [ ${rawPrice} ]`);
+
+            // Keep notifications lightweight to preserve speed (no screenshots).
+            sendDualAlert(
+                `✅ Account ${agent.id} SECURED Job! (NUCLEAR)\nPrice: $${job?.price}\nType: ${job?.isGrouped ? 'Grouped' : 'Single'}`,
+                `Job Secured (NUCLEAR) ($${job?.price})`
+            ).catch(() => {});
+
+            return { ok: true, reason: 'secured', method: 'nuclear', status };
+        }
+
+        if (status === 403) {
+            console.log(`[Account ${agent.id}] ❌ Nuclear accept FAILED (HTTP 403).`);
+            return { ok: false, reason: 'forbidden', method: 'nuclear', status };
+        }
+
+        console.log(`[Account ${agent.id}] ❌ Nuclear accept FAILED (HTTP ${status}).`);
+        return { ok: false, reason: `http_${status}`, method: 'nuclear', status };
+    } catch (e) {
+        console.error(`[Account ${agent.id}] Nuclear accept error for job ${job?.id}: ${e.message}`);
+        return { ok: false, reason: 'exception', method: 'nuclear' };
+    }
+}
+
 // --- JOB PROCESSING ---
 async function processJob(agent, job) {
+    if (NUCLEAR_ACCEPT_ENABLED) {
+        return await processJobNuclear(agent, job);
+    }
+
     let page;
     try {
         // Create a new page within the agent's context for each job
@@ -985,25 +1098,66 @@ async function run() {
         const totalJobs = Object.values(agentQueues).flat().length;
         if (totalJobs > 0) {
             // --- THE ATTACK ---
-            await Promise.all(agents.map(async (agent) => {
-                const queue = agentQueues[agent.id];
-                if (queue && queue.length > 0) {
-                    console.log(`[Account ${agent.id}] Parallel attack on ${queue.length} jobs...`);
-                    while (queue.length > 0) {
-                        const batch = queue.splice(0, CONFIG.maxConcurrentTabs);
-                        const results = await Promise.all(batch.map(j => processJob(agent, j)));
-
-                        // Non-blocking logging of outcomes.
-                        results.forEach((res, idx) => {
-                            const job = batch[idx];
-                            if (!job) return;
-                            if (res && res.ok) sheetsLogger.enqueue(job, 'taken');
-                            else if (res && res.reason === 'too_late') sheetsLogger.enqueue(job, 'failed');
-                            else sheetsLogger.enqueue(job, 'failed');
-                        });
-                    }
+            if (NUCLEAR_ACCEPT_ENABLED) {
+                // Nuclear mode: serialize accepts globally (highest price first), spaced by a small delay.
+                // This avoids blasting many POSTs at once.
+                const jobToAgent = new Map();
+                for (const agent of agents) {
+                    const q = agentQueues[agent.id] || [];
+                    for (const j of q) jobToAgent.set(String(j.id), agent);
                 }
-            }));
+
+                const orderedPlan = jobsToAssign
+                    .map(j => ({ job: j, agent: jobToAgent.get(String(j.id)) }))
+                    .filter(x => x.agent);
+
+                console.log(`⚡ Nuclear mode: processing ${orderedPlan.length} jobs sequentially (50-100ms spacing).`);
+
+                for (const step of orderedPlan) {
+                    const agent = step.agent;
+                    const job = step.job;
+
+                    // If the agent became full since planning (rare), skip.
+                    const requiredType = job.isGrouped ? 'grouped' : 'single';
+                    if ((capacityCache[agent.id]?.[requiredType]?.available ?? 0) <= 0) {
+                        sheetsLogger.enqueue(job, 'ignored_capacity');
+                        continue;
+                    }
+
+                    const res = await processJob(agent, job);
+
+                    if (res && res.ok) {
+                        sheetsLogger.enqueue(job, 'taken');
+                        // Keep local capacity cache roughly in sync.
+                        capacityCache[agent.id][requiredType].available = Math.max(0, capacityCache[agent.id][requiredType].available - 1);
+                    } else {
+                        // Treat any non-200 (including 403) as failed to take for Sheets.
+                        sheetsLogger.enqueue(job, 'failed');
+                    }
+
+                    await sleep(getNuclearDelayMs());
+                }
+            } else {
+                await Promise.all(agents.map(async (agent) => {
+                    const queue = agentQueues[agent.id];
+                    if (queue && queue.length > 0) {
+                        console.log(`[Account ${agent.id}] Parallel attack on ${queue.length} jobs...`);
+                        while (queue.length > 0) {
+                            const batch = queue.splice(0, CONFIG.maxConcurrentTabs);
+                            const results = await Promise.all(batch.map(j => processJob(agent, j)));
+
+                            // Non-blocking logging of outcomes.
+                            results.forEach((res, idx) => {
+                                const job = batch[idx];
+                                if (!job) return;
+                                if (res && res.ok) sheetsLogger.enqueue(job, 'taken');
+                                else if (res && res.reason === 'too_late') sheetsLogger.enqueue(job, 'failed');
+                                else sheetsLogger.enqueue(job, 'failed');
+                            });
+                        }
+                    }
+                }));
+            }
 
             // --- POST-PROCESSING ---
             try {
@@ -1083,6 +1237,7 @@ async function run() {
                         const groupType = attr.groupType ?? '';
                         const tags = Array.isArray(attr.tags) ? attr.tags : [];
                         const uid = attr.uid ?? '';
+                        const nextRoundDeadline = attr.nextRoundDeadline ?? '';
 
                         // Unmasked pricing in logs for Sniper verification
                         const rawPriceLog = String(price).split('').join(' ');
@@ -1094,6 +1249,8 @@ async function run() {
                             id: item.id,
                             url: jobUrl,
                             uid,
+                            nextRoundDeadline,
+                            roundDeadline: nextRoundDeadline,
                             price: price,
                             finalPrice: price,
                             originalPrice,
