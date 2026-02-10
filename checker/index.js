@@ -156,11 +156,16 @@ const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
 
 const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, ms || 0)));
 
-function getNuclearDelayMs() {
+function getNuclearDelayBounds() {
     const min = parseInt(process.env.NUCLEAR_ACCEPT_DELAY_MIN_MS || '50', 10);
     const max = parseInt(process.env.NUCLEAR_ACCEPT_DELAY_MAX_MS || '100', 10);
     const minMs = Number.isFinite(min) ? Math.max(0, min) : 50;
     const maxMs = Number.isFinite(max) ? Math.max(minMs, max) : Math.max(minMs, 100);
+    return { minMs, maxMs };
+}
+
+function getNuclearDelayMs() {
+    const { minMs, maxMs } = getNuclearDelayBounds();
     if (maxMs <= minMs) return minMs;
     return minMs + Math.floor(Math.random() * (maxMs - minMs + 1));
 }
@@ -761,6 +766,13 @@ async function run() {
     if (IS_CI) console.log('🚀 Mode: Cloud (CI) - 6h Loop');
     else console.log('💻 Mode: Local - Single Run');
 
+    if (NUCLEAR_ACCEPT_ENABLED) {
+        const { minMs, maxMs } = getNuclearDelayBounds();
+        console.log(`⚡ NUCLEAR_ACCEPT is ENABLED. Accepts use direct POST with ${minMs}-${maxMs}ms spacing (sequential).`);
+    } else {
+        console.log('🧭 NUCLEAR_ACCEPT is disabled. Using UI click flow.');
+    }
+
     if (CONFIG.checkOnly) {
         console.log('🛡️ SAFETY MODE: "CHECK_ONLY" is ON. Auto-Accept disabled.');
     }
@@ -1137,7 +1149,8 @@ async function run() {
                     .map(j => ({ job: j, agent: jobToAgent.get(String(j.id)) }))
                     .filter(x => x.agent);
 
-                console.log(`⚡ Nuclear mode: processing ${orderedPlan.length} jobs sequentially (50-100ms spacing).`);
+                const { minMs, maxMs } = getNuclearDelayBounds();
+                console.log(`⚡ Nuclear mode: processing ${orderedPlan.length} jobs sequentially (${minMs}-${maxMs}ms spacing).`);
 
                 for (const step of orderedPlan) {
                     const agent = step.agent;
