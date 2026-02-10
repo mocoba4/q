@@ -954,6 +954,8 @@ async function run() {
     // If new jobs are detected while dispatching, we queue them instead of dropping them.
     const pendingJobsById = new Map();
     const seenJobIdsThisRun = new Set();
+    // Nuclear-mode guard: ensure we only attempt accepting a given job ID once per run.
+    const nuclearAttemptedJobIds = new Set();
     const DISPATCH_QUEUE_ALERT_COOLDOWN_MS = Math.max(0, parseInt(process.env.DISPATCH_QUEUE_ALERT_COOLDOWN_MS || '15000', 10) || 15000);
     const CAPACITY_FULL_ALERT_COOLDOWN_MS = Math.max(0, parseInt(process.env.CAPACITY_FULL_ALERT_COOLDOWN_MS || '30000', 10) || 30000);
     let lastQueuedAlertAt = 0;
@@ -1140,6 +1142,14 @@ async function run() {
                 for (const step of orderedPlan) {
                     const agent = step.agent;
                     const job = step.job;
+
+                    // Dedupe: don't re-attempt the same job ID if it's rediscovered.
+                    const jobKey = String(job?.id ?? '');
+                    if (jobKey && nuclearAttemptedJobIds.has(jobKey)) {
+                        console.log(`[Account ${agent.id}] Nuclear dedupe: already attempted job ${jobKey}, skipping.`);
+                        continue;
+                    }
+                    if (jobKey) nuclearAttemptedJobIds.add(jobKey);
 
                     // If the agent became full since planning (rare), skip.
                     const requiredType = job.isGrouped ? 'grouped' : 'single';
