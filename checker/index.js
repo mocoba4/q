@@ -915,6 +915,30 @@ async function run() {
     const Agent2 = agents.length >= 2 ? agents[1] : null; // Secondary Spotter (Account 2)
     const LOOP_DURATION = 6 * 60 * 60 * 1000;
     const MIN_CYCLE_DURATION = CONFIG.checkInterval * 1000;
+
+    // --- BURST MODE (default; not secret-toggled) ---
+    // When we detect ANY jobs, switch to 1s refresh cadence to avoid missing updates.
+    // After jobs disappear, keep 1s cadence for 60s; if still no jobs, return to normal cadence.
+    const BURST_REFRESH_MS = 1000;
+    const BURST_GRACE_NO_JOB_MS = 60 * 1000;
+    let burstActive = false;
+    let burstLastJobSeenAt = 0;
+
+    function enterBurstMode(reason) {
+        const now = Date.now();
+        burstActive = true;
+        burstLastJobSeenAt = now;
+        console.log(`⚡ Burst mode ON (${reason}). Refreshing every ${BURST_REFRESH_MS}ms.`);
+    }
+
+    function maybeExitBurstMode() {
+        if (!burstActive) return;
+        const now = Date.now();
+        if (burstLastJobSeenAt > 0 && (now - burstLastJobSeenAt) > BURST_GRACE_NO_JOB_MS) {
+            burstActive = false;
+            console.log(`🟢 Burst mode OFF (no jobs for ${Math.round(BURST_GRACE_NO_JOB_MS / 1000)}s). Returning to normal cadence.`);
+        }
+    }
     const startTime = Date.now();
     let iterations = 0;
     let keepRunning = true;
@@ -1268,6 +1292,10 @@ async function run() {
                     lastSniperJobs = parsed;
                     if (parsed.length > 0) {
                         console.log(`[Sniper A${spotterAgent.id}] 🎯 Captured ${parsed.length} jobs via API.`);
+
+                        // Enter/extend burst mode whenever we see jobs.
+                        // This is the trigger to start 1s refresh cadence.
+                        enterBurstMode(`jobs_detected_by_A${spotterAgent.id}`);
                     }
 
                     // Flood guard: if too many jobs appear at once, switch to check-only for the rest of this run.
@@ -1306,6 +1334,10 @@ async function run() {
         while (keepRunning) {
             const cycleStart = Date.now();
             iterations++;
+
+            // Burst mode auto-exit check (based on how long since we last saw any jobs).
+            maybeExitBurstMode();
+
             if (IS_CI) {
                 const timeRemaining = Math.round((LOOP_DURATION - (Date.now() - startTime)) / 1000);
                 console.log(`\n🔄 Iteration #${iterations} (Time remaining: ${timeRemaining}s)`);
@@ -1314,8 +1346,13 @@ async function run() {
             try {
                 // Dual-spotter check cadence: split CHECK_INTERVAL across Account 1 + Account 2.
                 // This yields: A1 check, wait half-interval, A2 check, wait half-interval, repeat.
-                const spotters = (!CONFIG.checkOnly && Agent2) ? [Agent1, Agent2] : [Agent1];
-                const subCycleMs = Math.max(500, Math.floor(MIN_CYCLE_DURATION / spotters.length));
+                const spotters = burstActive
+                    ? [Agent1]
+                    : ((!CONFIG.checkOnly && Agent2) ? [Agent1, Agent2] : [Agent1]);
+                const baseCycleMs = burstActive ? BURST_REFRESH_MS : MIN_CYCLE_DURATION;
+                const subCycleMs = burstActive
+                    ? BURST_REFRESH_MS
+                    : Math.max(500, Math.floor(baseCycleMs / spotters.length));
                 const activeSpotter = spotters[(iterations - 1) % spotters.length];
 
                 // 1. Refresh active Spotter
