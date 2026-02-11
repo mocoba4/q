@@ -211,6 +211,14 @@ function createSheetsLogger() {
     const viewTitle = process.env.GOOGLE_SHEETS_TAB || 'Jobs';
     const rawTitle = process.env.GOOGLE_SHEETS_RAW_TAB || 'Not Important';
 
+    const statusFilteredViewTabs = [
+        { title: 'Accepted', statusText: 'Job taken' },
+        { title: 'Failed', statusText: 'Failed to take job' },
+        { title: 'Ignored: Low Price', statusText: 'Ignored: Low Price' },
+        { title: 'Ignored: Capacity Full', statusText: 'Ignored: Capacity Full' },
+        { title: 'Check Only', statusText: 'Check Only Mode' }
+    ];
+
     const queue = [];
     const recentlyEnqueuedKeys = new Map();
     const dedupeWindowMs = (() => {
@@ -331,37 +339,37 @@ function createSheetsLogger() {
             });
 
             const sheets = meta.data.sheets || [];
-            const existingRaw = sheets.find(s => s.properties && s.properties.title === rawTitle);
-            const existingView = sheets.find(s => s.properties && s.properties.title === viewTitle);
+            const sheetIdByTitle = new Map();
+            for (const s of sheets) {
+                const title = s?.properties?.title;
+                const sid = s?.properties?.sheetId;
+                if (title && sid !== undefined && sid !== null) sheetIdByTitle.set(title, sid);
+            }
 
-            if (!existingRaw || !existingView) {
-                const requests = [];
-                if (!existingRaw) requests.push({ addSheet: { properties: { title: rawTitle } } });
-                if (!existingView) requests.push({ addSheet: { properties: { title: viewTitle } } });
+            const requiredTitles = [rawTitle, viewTitle, ...statusFilteredViewTabs.map(t => t.title)];
+            const missingTitles = requiredTitles.filter(t => !sheetIdByTitle.has(t));
 
+            if (missingTitles.length > 0) {
+                const requests = missingTitles.map(title => ({ addSheet: { properties: { title } } }));
                 const addRes = await sheetsClient.spreadsheets.batchUpdate({
                     spreadsheetId,
                     requestBody: { requests }
                 });
 
-                // Replies are in request order.
                 const replies = addRes.data.replies || [];
-                let idx = 0;
-                if (!existingRaw) {
-                    rawSheetId = replies[idx]?.addSheet?.properties?.sheetId ?? null;
-                    idx++;
-                } else {
-                    rawSheetId = existingRaw.properties.sheetId;
+                for (let i = 0; i < missingTitles.length; i++) {
+                    const title = missingTitles[i];
+                    const sheetId = replies[i]?.addSheet?.properties?.sheetId ?? null;
+                    if (sheetId !== null) sheetIdByTitle.set(title, sheetId);
                 }
-                if (!existingView) {
-                    viewSheetId = replies[idx]?.addSheet?.properties?.sheetId ?? null;
-                } else {
-                    viewSheetId = existingView.properties.sheetId;
-                }
-            } else {
-                rawSheetId = existingRaw.properties.sheetId;
-                viewSheetId = existingView.properties.sheetId;
             }
+
+            rawSheetId = sheetIdByTitle.get(rawTitle) ?? null;
+            viewSheetId = sheetIdByTitle.get(viewTitle) ?? null;
+            const statusFilteredTabsWithIds = statusFilteredViewTabs.map(t => ({
+                ...t,
+                sheetId: sheetIdByTitle.get(t.title) ?? null
+            }));
 
             const headerValues = [[
                 'Status',
@@ -624,6 +632,9 @@ function createSheetsLogger() {
 
             await syncStatusFormattingForSheet(rawSheetId);
             await syncStatusFormattingForSheet(viewSheetId);
+            for (const t of statusFilteredTabsWithIds) {
+                await syncStatusFormattingForSheet(t.sheetId);
+            }
 
             // Ensure "Detected at" (column B) displays as a date/time instead of raw serial numbers.
             // This fixes cases where the underlying value is a valid Sheets date but the column format is "Number".
@@ -657,6 +668,9 @@ function createSheetsLogger() {
 
             await syncDetectedAtNumberFormatForSheet(rawSheetId);
             await syncDetectedAtNumberFormatForSheet(viewSheetId);
+            for (const t of statusFilteredTabsWithIds) {
+                await syncDetectedAtNumberFormatForSheet(t.sheetId);
+            }
 
             // Add a dropdown for Status on the RAW tab so you can manually adjust statuses if needed.
             // (Note: the Jobs tab is a formula-driven view, so editing cells there won't persist.)
@@ -715,6 +729,22 @@ function createSheetsLogger() {
                 range: `${viewTitle}!A2:Z`
             }).catch(() => null);
 
+            // Additional view tabs (Accepted/Failed/Ignored...): headers + spill formulas.
+            for (const t of statusFilteredTabsWithIds) {
+                if (!t.sheetId) continue;
+                await sheetsClient.spreadsheets.values.update({
+                    spreadsheetId,
+                    range: `${t.title}!A1:O1`,
+                    valueInputOption: 'RAW',
+                    requestBody: { values: headerValues }
+                });
+
+                await sheetsClient.spreadsheets.values.clear({
+                    spreadsheetId,
+                    range: `${t.title}!A2:Z`
+                }).catch(() => null);
+            }
+
             const rawQ = quoteSheetName(rawTitle);
             // Jobs view (compat-friendly; avoids LET):
             // - 1 row per unique Job ID (latest event wins)
@@ -770,6 +800,42 @@ INDEX(${latestExpr},,15)
                 valueInputOption: 'USER_ENTERED',
                 requestBody: { values: [[viewFormula2]] }
             });
+
+            function escapeQueryStringLiteral(s) {
+                return String(s || '').replace(/'/g, "''");
+            }
+
+            function buildStatusFilteredViewFormula(statusText) {
+                const lit = escapeQueryStringLiteral(statusText);
+                return `=IFERROR(QUERY(SORT({
+${firstNoExpr},
+INDEX(${latestExpr},,1),
+INDEX(${latestExpr},,2),
+${firstNoExpr},
+INDEX(${latestExpr},,4),
+INDEX(${latestExpr},,5),
+INDEX(${latestExpr},,6),
+INDEX(${latestExpr},,7),
+INDEX(${latestExpr},,8),
+INDEX(${latestExpr},,9),
+INDEX(${latestExpr},,10),
+INDEX(${latestExpr},,11),
+INDEX(${latestExpr},,12),
+INDEX(${latestExpr},,13),
+INDEX(${latestExpr},,14),
+INDEX(${latestExpr},,15)
+}, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16 where Col2 = '${lit}'", 0), "")`;
+            }
+
+            for (const t of statusFilteredTabsWithIds) {
+                if (!t.sheetId) continue;
+                await sheetsClient.spreadsheets.values.update({
+                    spreadsheetId,
+                    range: `${t.title}!A2:A2`,
+                    valueInputOption: 'USER_ENTERED',
+                    requestBody: { values: [[buildStatusFilteredViewFormula(t.statusText)]] }
+                });
+            }
 
             isReady = true;
             console.log(`[Sheets] Logging enabled → ${viewTitle} (view) + ${rawTitle} (raw) (spreadsheet ${spreadsheetId})`);

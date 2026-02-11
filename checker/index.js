@@ -915,10 +915,12 @@ async function run() {
 
     // --- INITIAL CAPACITY SCAN ---
     console.log('🔄 Performing initial capacity scan...');
-    const capacityCache = {};
+    const capacityCache = {}; // last scanned (actual)
+    const expectedCapacityCache = {}; // local expected (used for planning during burst+nuclear)
     await Promise.all(agents.map(async (agent) => {
         const cap = await getCapacity(agent.page);
         capacityCache[agent.id] = cap;
+        expectedCapacityCache[agent.id] = JSON.parse(JSON.stringify(cap));
         console.log(`[Account ${agent.id}] Init Capacity: Single ${cap.single.available} | Grouped ${cap.grouped.available}`);
     }));
 
@@ -940,6 +942,7 @@ async function run() {
         const now = Date.now();
         burstActive = true;
         burstLastJobSeenAt = now;
+        if (NUCLEAR_ACCEPT_ENABLED) nuclearBurstSeenSinceLastReconcile = true;
         console.log(`⚡ Burst mode ON (${reason}). Refreshing every ${BURST_REFRESH_MS}ms.`);
     }
 
@@ -948,6 +951,7 @@ async function run() {
         const now = Date.now();
         if (burstLastJobSeenAt > 0 && (now - burstLastJobSeenAt) > BURST_GRACE_NO_JOB_MS) {
             burstActive = false;
+            if (NUCLEAR_ACCEPT_ENABLED && nuclearBurstSeenSinceLastReconcile) capacityReconcileRequested = true;
             console.log(`🟢 Burst mode OFF (no jobs for ${Math.round(BURST_GRACE_NO_JOB_MS / 1000)}s). Returning to normal cadence.`);
         }
     }
@@ -955,6 +959,94 @@ async function run() {
     let iterations = 0;
     let keepRunning = true;
     let isDispatching = false; // The Lock 🔒
+
+    // Capacity reconciliation (used when we defer scans during burst+nuclear)
+    // Policy:
+    // - While burstActive && nuclear enabled: don't do deep refresh/capacity scans.
+    // - After burst ends: run ONE scan to reconcile.
+    // - Only send Telegram/ntfy if expected != actual.
+    let capacityReconcileRequested = false;
+    let capacityReconciling = false;
+    let nuclearBurstSeenSinceLastReconcile = false;
+
+    function applyExpectedCapacityDelta(agentId, requiredType, deltaAccepted) {
+        const id = Number(agentId);
+        if (!Number.isFinite(id)) return;
+        const cap = expectedCapacityCache[id];
+        if (!cap || !cap[requiredType]) return;
+
+        const entry = cap[requiredType];
+        const delta = Number(deltaAccepted) || 0;
+        if (delta === 0) return;
+
+        entry.current = Math.max(0, (Number(entry.current) || 0) + delta);
+        entry.available = Math.max(0, (Number(entry.available) || 0) - delta);
+    }
+
+    async function reconcileCapacitiesAfterBurst({ reason }) {
+        if (capacityReconciling) return;
+        capacityReconciling = true;
+
+        const expectedSnapshot = JSON.parse(JSON.stringify(expectedCapacityCache));
+
+        try {
+            console.log(`🧮 Reconciling capacities after burst (${reason || 'burst_end'})...`);
+
+            // Deep refresh so UI capacity reflects latest state.
+            await Promise.all(agents.map(async (agent) => {
+                try {
+                    if (!agent.page.url().includes('modeling-requests')) {
+                        await agent.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                    }
+                    await agent.page.reload({ waitUntil: 'networkidle' });
+                } catch (e) {
+                    console.error(`[Account ${agent.id}] Capacity reconcile reload failed: ${e.message}`);
+                }
+            }));
+
+            const actual = {};
+            await Promise.all(agents.map(async (agent) => {
+                const cap = await getCapacity(agent.page);
+                actual[agent.id] = cap;
+            }));
+
+            const mismatches = [];
+            for (const agent of agents) {
+                const id = agent.id;
+                const exp = expectedSnapshot[id];
+                const act = actual[id];
+                if (!exp || !act) continue;
+
+                for (const t of ['single', 'grouped']) {
+                    const eAvail = exp?.[t]?.available;
+                    const aAvail = act?.[t]?.available;
+                    if (Number(eAvail) !== Number(aAvail)) {
+                        mismatches.push(`A${id} ${t}: expected ${eAvail} vs actual ${aAvail}`);
+                    }
+                }
+            }
+
+            // Update caches to scanned reality.
+            for (const [idStr, cap] of Object.entries(actual)) {
+                const id = Number(idStr);
+                capacityCache[id] = cap;
+                expectedCapacityCache[id] = JSON.parse(JSON.stringify(cap));
+            }
+
+            if (mismatches.length > 0) {
+                const msg = `🧮 Capacity reconcile (${reason || 'burst_end'}) discrepancies:\n${mismatches.join('\n')}`;
+                await sendDualAlert(msg, msg);
+            } else {
+                console.log('🧮 Capacity reconcile: expected matches actual.');
+            }
+        } catch (e) {
+            console.error(`Capacity reconcile failed: ${e.message}`);
+        } finally {
+            capacityReconciling = false;
+            capacityReconcileRequested = false;
+            nuclearBurstSeenSinceLastReconcile = false;
+        }
+    }
 
     // Flood guard: if a single check returns too many available jobs, switch to check-only for the rest of the run.
     const MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY = (() => {
@@ -1119,7 +1211,7 @@ async function run() {
 
         const agentQueues = {};
         agents.forEach(a => agentQueues[a.id] = []);
-        const currentCapacities = JSON.parse(JSON.stringify(capacityCache));
+        const currentCapacities = JSON.parse(JSON.stringify(expectedCapacityCache));
 
         for (const job of jobsToAssign) {
             const requiredType = job.isGrouped ? 'grouped' : 'single';
@@ -1166,7 +1258,7 @@ async function run() {
 
                     // If the agent became full since planning (rare), skip.
                     const requiredType = job.isGrouped ? 'grouped' : 'single';
-                    if ((capacityCache[agent.id]?.[requiredType]?.available ?? 0) <= 0) {
+                    if ((expectedCapacityCache[agent.id]?.[requiredType]?.available ?? 0) <= 0) {
                         sheetsLogger.enqueue(job, 'ignored_capacity');
                         continue;
                     }
@@ -1175,8 +1267,8 @@ async function run() {
 
                     if (res && res.ok) {
                         sheetsLogger.enqueue(job, 'taken');
-                        // Keep local capacity cache roughly in sync.
-                        capacityCache[agent.id][requiredType].available = Math.max(0, capacityCache[agent.id][requiredType].available - 1);
+                        // Keep local expected capacity roughly in sync.
+                        applyExpectedCapacityDelta(agent.id, requiredType, 1);
                     } else {
                         // Treat any non-200 (including 403) as failed to take for Sheets.
                         sheetsLogger.enqueue(job, 'failed');
@@ -1197,7 +1289,11 @@ async function run() {
                             results.forEach((res, idx) => {
                                 const job = batch[idx];
                                 if (!job) return;
-                                if (res && res.ok) sheetsLogger.enqueue(job, 'taken');
+                                if (res && res.ok) {
+                                    sheetsLogger.enqueue(job, 'taken');
+                                    const requiredType = job.isGrouped ? 'grouped' : 'single';
+                                    applyExpectedCapacityDelta(agent.id, requiredType, 1);
+                                }
                                 else if (res && res.reason === 'too_late') sheetsLogger.enqueue(job, 'failed');
                                 else sheetsLogger.enqueue(job, 'failed');
                             });
@@ -1219,19 +1315,26 @@ async function run() {
                 const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                 sendDualAlert(`🎯 Swarm Complete!`, `Processing complete.`, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
 
-                console.log('🔄 Deep Refreshing for capacity scan...');
-                await Promise.all(agents.map(async (agent) => {
-                    // Spotter (Agent 1) should reload to refresh session/capacity token
-                    // But we do it carefully
-                    await agent.page.reload({ waitUntil: 'networkidle' });
-                }));
+                const deferCapacityScan = Boolean(NUCLEAR_ACCEPT_ENABLED && burstActive);
+                if (deferCapacityScan) {
+                    nuclearBurstSeenSinceLastReconcile = true;
+                    console.log('⏸️ Deferring capacity re-check (burst + nuclear). Will reconcile after burst ends.');
+                } else {
+                    console.log('🔄 Deep Refreshing for capacity scan...');
+                    await Promise.all(agents.map(async (agent) => {
+                        // Spotter (Agent 1) should reload to refresh session/capacity token
+                        // But we do it carefully
+                        await agent.page.reload({ waitUntil: 'networkidle' });
+                    }));
 
-                console.log('Updating memory with fresh capacities...');
-                await Promise.all(agents.map(async (agent) => {
-                    const cap = await getCapacity(agent.page);
-                    capacityCache[agent.id] = cap;
-                    console.log(`[Account ${agent.id}] Capacity updated: ${cap.single.available}/${cap.grouped.available}`);
-                }));
+                    console.log('Updating memory with fresh capacities...');
+                    await Promise.all(agents.map(async (agent) => {
+                        const cap = await getCapacity(agent.page);
+                        capacityCache[agent.id] = cap;
+                        expectedCapacityCache[agent.id] = JSON.parse(JSON.stringify(cap));
+                        console.log(`[Account ${agent.id}] Capacity updated: ${cap.single.available}/${cap.grouped.available}`);
+                    }));
+                }
             } catch (e) {
                 console.error('Post-processing error:', e.message);
             }
@@ -1360,6 +1463,11 @@ async function run() {
 
             // Burst mode auto-exit check (based on how long since we last saw any jobs).
             maybeExitBurstMode();
+
+            // If we deferred capacity scans during burst+nuclear, reconcile once after burst ends.
+            if (!burstActive && capacityReconcileRequested && !isDispatching) {
+                await reconcileCapacitiesAfterBurst({ reason: 'burst_end' });
+            }
 
             if (IS_CI) {
                 const timeRemaining = Math.round((LOOP_DURATION - (Date.now() - startTime)) / 1000);
