@@ -194,28 +194,60 @@ function buildStatusDropdownValidationRule() {
 }
 
 function buildTotalSumConditionalFormattingRequest(sheetId) {
-    // Final price is column H (index 7). Apply formatting from row 2 downward.
-    const sumCellRange = { sheetId, startRowIndex: 1, endRowIndex: 10000, startColumnIndex: 7, endColumnIndex: 8 };
+    // TOTAL label is in column G (Original price). Final price sum is in column H.
+    // Apply formatting from row 2 downward.
+    const sumCellsRange = { sheetId, startRowIndex: 1, endRowIndex: 10000, startColumnIndex: 6, endColumnIndex: 8 };
 
-    // Highlight the Final price cell only on the TOTAL row.
-    // TOTAL label is in column D in our view output.
+    // Highlight Original price + Final price cells only on the TOTAL row.
     return {
         addConditionalFormatRule: {
             index: 0,
             rule: {
-                ranges: [sumCellRange],
+                ranges: [sumCellsRange],
                 booleanRule: {
-                    condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=$D2="TOTAL"' }] },
+                    condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=$G2="TOTAL"' }] },
                     format: {
-                        backgroundColor: { red: 1.0, green: 0.92, blue: 0.35 },
+                        // Deep saturated green
+                        backgroundColor: { red: 0.0, green: 0.55, blue: 0.2 },
                         textFormat: {
                             bold: true,
                             fontSize: 14,
-                            foregroundColor: { red: 0.05, green: 0.05, blue: 0.05 }
+                            foregroundColor: { red: 1.0, green: 1.0, blue: 1.0 }
                         }
                     }
                 }
             }
+        }
+    };
+}
+
+function buildTotalSumBorderRequest(sheetId) {
+    // Border around G2:H2 (row 2, columns G-H)
+    const range = { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 6, endColumnIndex: 8 };
+    const border = { style: 'SOLID_THICK', width: 2, color: { red: 1.0, green: 1.0, blue: 1.0 } };
+    return {
+        updateBorders: {
+            range,
+            top: border,
+            bottom: border,
+            left: border,
+            right: border
+        }
+    };
+}
+
+function buildTotalSumAlignmentRequest(sheetId) {
+    // Center-align G2:H2 to make it stand out.
+    return {
+        repeatCell: {
+            range: { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 6, endColumnIndex: 8 },
+            cell: {
+                userEnteredFormat: {
+                    horizontalAlignment: 'CENTER',
+                    verticalAlignment: 'MIDDLE'
+                }
+            },
+            fields: 'userEnteredFormat(horizontalAlignment,verticalAlignment)'
         }
     };
 }
@@ -960,7 +992,8 @@ INDEX(${latestExpr},,15),
 INDEX(${latestExpr},,16)
 }, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16,Col17", 0)`;
 
-            const sumRow = `{\"\",\"\",\"\",\"TOTAL\",\"\",\"\",\"\",SUM(INDEX(${baseQuery},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
+            // TOTAL label in column G (Original price), adjacent to Final price sum in column H.
+            const sumRow = `{\"\",\"\",\"\",\"\",\"\",\"\",\"TOTAL\",SUM(INDEX(${baseQuery},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
             // Place TOTAL row first so we can freeze it.
             const viewFormula2 = `=IFERROR({${sumRow};${baseQuery}}, "")`;
 
@@ -1020,7 +1053,7 @@ INDEX(${latestExpr},,15),
 INDEX(${latestExpr},,16)
 }, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16,Col17 where Col2 = '${lit}'", 0)`;
 
-                const footer = `{\"\",\"\",\"\",\"TOTAL\",\"\",\"\",\"\",SUM(INDEX(${q},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
+                const footer = `{\"\",\"\",\"\",\"\",\"\",\"\",\"TOTAL\",SUM(INDEX(${q},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
                 return `=IFERROR({${footer};${q}}, "")`;
             }
 
@@ -1058,43 +1091,45 @@ INDEX(${latestExpr},,16)
                 console.error(`[Sheets] Freeze rows failed: ${e.message}`);
             }
 
-            // Make TOTAL sum cell pop (conditional formatting) on all view tabs.
+            // Make TOTAL sum cells pop (conditional formatting + border) on all view tabs.
+            // Use a marker in Z2 so we don't re-add rules every run.
             try {
-                const metaCF = await sheetsClient.spreadsheets.get({
-                    spreadsheetId,
-                    fields: 'sheets(properties(sheetId,title),conditionalFormats)'
-                });
+                const TOTAL_POP_VERSION = 'total_pop_v2';
 
-                const sheetsCF = metaCF.data.sheets || [];
-                const needAdd = [];
-                const desiredFormula = '=$D2="TOTAL"';
+                const viewTitlesInOrder = [viewTitle, ...statusFilteredTabsWithIds.map(t => t.title)];
+                const viewIdsInOrder = [viewSheetId, ...statusFilteredTabsWithIds.map(t => t.sheetId)];
+                const popMarkers = await Promise.all(viewTitlesInOrder.map(t => getCellValue(t, 'Z2', 'UNFORMATTED_VALUE')));
 
-                for (const sid of [viewSheetId, ...statusFilteredTabsWithIds.map(t => t.sheetId)]) {
-                    const numericSid = Number(sid);
-                    if (!Number.isFinite(numericSid)) continue;
-                    const sh = sheetsCF.find(s => Number(s?.properties?.sheetId) === numericSid);
-                    const rules = sh?.conditionalFormats || [];
-                    const already = rules.some(r => {
-                        const cond = r?.booleanRule?.condition;
-                        const isCustom = cond?.type === 'CUSTOM_FORMULA';
-                        const v = cond?.values?.[0]?.userEnteredValue;
-                        if (!isCustom || safeString(v).trim() !== desiredFormula) return false;
-                        const ranges = r?.ranges || [];
-                        return ranges.some(rr => (rr.startColumnIndex ?? -1) === 7 && (rr.endColumnIndex ?? -1) === 8);
-                    });
-                    if (!already) {
-                        needAdd.push(buildTotalSumConditionalFormattingRequest(numericSid));
-                    }
+                const popRequests = [];
+                const markerWrites = [];
+
+                for (let i = 0; i < viewTitlesInOrder.length; i++) {
+                    const sheetTitle = viewTitlesInOrder[i];
+                    const sheetId = Number(viewIdsInOrder[i]);
+                    if (!Number.isFinite(sheetId)) continue;
+
+                    const m = safeString(popMarkers[i]).trim();
+                    if (m === TOTAL_POP_VERSION) continue;
+
+                    popRequests.push(buildTotalSumConditionalFormattingRequest(sheetId));
+                    popRequests.push(buildTotalSumBorderRequest(sheetId));
+                    popRequests.push(buildTotalSumAlignmentRequest(sheetId));
+                    markerWrites.push(sheetTitle);
                 }
 
-                if (needAdd.length > 0) {
+                if (popRequests.length > 0) {
                     await sheetsClient.spreadsheets.batchUpdate({
                         spreadsheetId,
-                        requestBody: { requests: needAdd }
+                        requestBody: { requests: popRequests }
                     });
+
+                    for (const title of markerWrites) {
+                        // eslint-disable-next-line no-await-in-loop
+                        await setCellValue(title, 'Z2', TOTAL_POP_VERSION, false);
+                    }
                 }
             } catch (e) {
-                console.error(`[Sheets] TOTAL cell formatting failed: ${e.message}`);
+                console.error(`[Sheets] TOTAL pop formatting failed: ${e.message}`);
             }
 
             isReady = true;
