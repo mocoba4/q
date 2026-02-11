@@ -209,7 +209,8 @@ function isEnabled() {
 function createSheetsLogger() {
     const spreadsheetId = process.env.GOOGLE_SHEETS_ID;
     const viewTitle = process.env.GOOGLE_SHEETS_TAB || 'Jobs';
-    const rawTitle = process.env.GOOGLE_SHEETS_RAW_TAB || 'Not Important';
+    let rawTitle = process.env.GOOGLE_SHEETS_RAW_TAB || 'Original';
+    const legacyRawTitle = 'Not Important';
 
     const statusFilteredViewTabs = [
         { title: 'Accepted', statusText: 'Job taken' },
@@ -255,7 +256,12 @@ function createSheetsLogger() {
         const out = new Array(standardHeaders.length).fill('');
         for (let i = 0; i < standardHeaders.length; i++) {
             const key = safeString(standardHeaders[i]).trim().toLowerCase();
-            const idx = headerIndex.get(key);
+            let idx = headerIndex.get(key);
+            if (idx === undefined && key === 'final price (raw)') {
+                idx = headerIndex.get('final price');
+            }
+            // Never migrate into the calculated Final price field.
+            if (key === 'final price') idx = undefined;
             if (typeof idx === 'number' && idx >= 0 && idx < (row || []).length) {
                 out[i] = row[idx];
             }
@@ -298,14 +304,15 @@ function createSheetsLogger() {
                 safeString(job.id),
                 safeString(job.uid ?? ''),
                 safeString(job.originalPrice ?? ''),
-                safeString(finalPrice),
+                '',
                 safeString(job.multiplier ?? ''),
                 safeString(job.complexity ?? ''),
                 job.isGrouped ? 'Grouped' : 'Solo',
                 safeString(variations),
                 safeString(pricePerVariation),
                 safeString(job.groupType ?? ''),
-                safeString(job.tags ?? '')
+                safeString(job.tags ?? ''),
+                safeString(finalPrice)
             ],
             status
         });
@@ -346,6 +353,37 @@ function createSheetsLogger() {
                 if (title && sid !== undefined && sid !== null) sheetIdByTitle.set(title, sid);
             }
 
+            // Rename legacy raw sheet "Not Important" -> "Original" (only when not explicitly overridden).
+            if (!process.env.GOOGLE_SHEETS_RAW_TAB && rawTitle === 'Original') {
+                const legacyId = sheetIdByTitle.get(legacyRawTitle);
+                const alreadyId = sheetIdByTitle.get(rawTitle);
+                if (legacyId && !alreadyId) {
+                    try {
+                        await sheetsClient.spreadsheets.batchUpdate({
+                            spreadsheetId,
+                            requestBody: {
+                                requests: [
+                                    {
+                                        updateSheetProperties: {
+                                            properties: {
+                                                sheetId: legacyId,
+                                                title: rawTitle
+                                            },
+                                            fields: 'title'
+                                        }
+                                    }
+                                ]
+                            }
+                        });
+                        sheetIdByTitle.delete(legacyRawTitle);
+                        sheetIdByTitle.set(rawTitle, legacyId);
+                        console.log(`[Sheets] Renamed raw tab "${legacyRawTitle}" → "${rawTitle}".`);
+                    } catch (e) {
+                        console.error(`[Sheets] Raw tab rename failed: ${e.message}`);
+                    }
+                }
+            }
+
             const requiredTitles = [rawTitle, viewTitle, ...statusFilteredViewTabs.map(t => t.title)];
             const missingTitles = requiredTitles.filter(t => !sheetIdByTitle.has(t));
 
@@ -371,6 +409,14 @@ function createSheetsLogger() {
                 sheetId: sheetIdByTitle.get(t.title) ?? null
             }));
 
+            if (!process.env.GOOGLE_SHEETS_RAW_TAB && rawTitle === 'Original') {
+                try {
+                    await setTabColor(rawSheetId, { red: 1, green: 0, blue: 0 });
+                } catch (e) {
+                    console.error(`[Sheets] Failed to set raw tab color: ${e.message}`);
+                }
+            }
+
             const headerValues = [[
                 'Status',
                 'Detected at',
@@ -386,8 +432,30 @@ function createSheetsLogger() {
                 'Variations',
                 'Price per variation',
                 'Group type',
-                'Tags'
+                'Tags',
+                'Final price (raw)'
             ]];
+
+            async function setTabColor(targetSheetId, rgb) {
+                const numericSheetId = Number(targetSheetId);
+                if (!Number.isFinite(numericSheetId)) return;
+                await sheetsClient.spreadsheets.batchUpdate({
+                    spreadsheetId,
+                    requestBody: {
+                        requests: [
+                            {
+                                updateSheetProperties: {
+                                    properties: {
+                                        sheetId: numericSheetId,
+                                        tabColor: rgb
+                                    },
+                                    fields: 'tabColor'
+                                }
+                            }
+                        ]
+                    }
+                });
+            }
 
             // --- ONE-TIME MIGRATION (legacy Jobs -> raw tab) ---
             // If the raw tab is empty, copy any existing rows from the Jobs tab into it once.
@@ -400,7 +468,7 @@ function createSheetsLogger() {
                     }).catch(() => null),
                     sheetsClient.spreadsheets.values.get({
                         spreadsheetId,
-                        range: `${rawTitle}!A1:O3`
+                        range: `${rawTitle}!A1:P3`
                     }).catch(() => null)
                 ]);
 
@@ -431,7 +499,7 @@ function createSheetsLogger() {
                             // Ensure raw headers exist before appending.
                             await sheetsClient.spreadsheets.values.update({
                                 spreadsheetId,
-                                range: `${rawTitle}!A1:O1`,
+                                range: `${rawTitle}!A1:P1`,
                                 valueInputOption: 'RAW',
                                 requestBody: { values: headerValues }
                             });
@@ -444,7 +512,7 @@ function createSheetsLogger() {
                             if (normalized.length > 0) {
                                 await sheetsClient.spreadsheets.values.append({
                                     spreadsheetId,
-                                    range: `${rawTitle}!A:O`,
+                                    range: `${rawTitle}!A:P`,
                                     valueInputOption: 'USER_ENTERED',
                                     insertDataOption: 'INSERT_ROWS',
                                     requestBody: { values: normalized }
@@ -464,6 +532,73 @@ function createSheetsLogger() {
                 }
             } catch (e) {
                 console.error(`[Sheets] Legacy migration check failed: ${e.message}`);
+            }
+
+            // One-time migration:
+            // - Preserve legacy numeric Final price values into "Final price (raw)" (column P)
+            // - Make "Final price" (column H) a calculated field: Original price (G) * Multiplier (I), rounded UP to 2 decimals
+            // Marker stored in raw!Z2
+            try {
+                const markerRes = await sheetsClient.spreadsheets.values.get({
+                    spreadsheetId,
+                    range: `${rawTitle}!Z2:Z2`
+                }).catch(() => null);
+                const markerVal = markerRes?.data?.values?.[0]?.[0];
+                const isDone = safeString(markerVal).trim() === 'final_price_calc_v1';
+
+                if (!isDone) {
+                    // Best-effort: copy existing H values to P as RAW values (bounded).
+                    const oldFinalRes = await sheetsClient.spreadsheets.values.get({
+                        spreadsheetId,
+                        range: `${rawTitle}!H2:H10000`
+                    }).catch(() => null);
+                    const oldFinalVals = oldFinalRes?.data?.values || [];
+                    if (oldFinalVals.length > 0) {
+                        await sheetsClient.spreadsheets.values.update({
+                            spreadsheetId,
+                            range: `${rawTitle}!P2:P${oldFinalVals.length + 1}`,
+                            valueInputOption: 'RAW',
+                            requestBody: { values: oldFinalVals }
+                        });
+                    }
+
+                    // Clear H so the calculated ARRAYFORMULA can spill.
+                    await sheetsClient.spreadsheets.values.clear({
+                        spreadsheetId,
+                        range: `${rawTitle}!H2:H10000`
+                    }).catch(() => null);
+
+                    // Calculated Final price formula:
+                    // - Blank when Job ID is blank
+                    // - ROUNDUP to 2 decimals
+                    const calcFormula = '=ARRAYFORMULA(IF(LEN(E2:E)=0, "", IFERROR(ROUNDUP(VALUE(G2:G)*VALUE(I2:I), 2), "")))';
+                    await sheetsClient.spreadsheets.values.update({
+                        spreadsheetId,
+                        range: `${rawTitle}!H2:H2`,
+                        valueInputOption: 'USER_ENTERED',
+                        requestBody: { values: [[calcFormula]] }
+                    });
+
+                    // Ensure headers match the new schema width.
+                    await sheetsClient.spreadsheets.values.update({
+                        spreadsheetId,
+                        range: `${rawTitle}!A1:P1`,
+                        valueInputOption: 'RAW',
+                        requestBody: { values: headerValues }
+                    }).catch(() => null);
+
+                    // Mark migration done.
+                    await sheetsClient.spreadsheets.values.update({
+                        spreadsheetId,
+                        range: `${rawTitle}!Z2:Z2`,
+                        valueInputOption: 'RAW',
+                        requestBody: { values: [['final_price_calc_v1']] }
+                    });
+
+                    console.log('[Sheets] Migrated Final price to calculated field + preserved Final price (raw).');
+                }
+            } catch (e) {
+                console.error(`[Sheets] Final price migration failed: ${e.message}`);
             }
 
             // If this sheet already has headers with Status in a different column,
@@ -702,14 +837,14 @@ function createSheetsLogger() {
             // RAW tab: write headers if empty.
             const rawHeaderRes = await sheetsClient.spreadsheets.values.get({
                 spreadsheetId,
-                range: `${rawTitle}!A1:O1`
+                range: `${rawTitle}!A1:P1`
             }).catch(() => null);
 
             const rawHeaderRow = rawHeaderRes?.data?.values?.[0] || [];
             if (rawHeaderRow.length === 0) {
                 await sheetsClient.spreadsheets.values.update({
                     spreadsheetId,
-                    range: `${rawTitle}!A1:O1`,
+                    range: `${rawTitle}!A1:P1`,
                     valueInputOption: 'RAW',
                     requestBody: { values: headerValues }
                 });
@@ -718,7 +853,7 @@ function createSheetsLogger() {
             // VIEW tab (Jobs): force headers + formula-driven latest-per-Job-ID view.
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
-                range: `${viewTitle}!A1:O1`,
+                range: `${viewTitle}!A1:P1`,
                 valueInputOption: 'RAW',
                 requestBody: { values: headerValues }
             });
@@ -734,7 +869,7 @@ function createSheetsLogger() {
                 if (!t.sheetId) continue;
                 await sheetsClient.spreadsheets.values.update({
                     spreadsheetId,
-                    range: `${t.title}!A1:O1`,
+                    range: `${t.title}!A1:P1`,
                     valueInputOption: 'RAW',
                     requestBody: { values: headerValues }
                 });
@@ -752,10 +887,12 @@ function createSheetsLogger() {
             // - Jobs '#' column shows that first-seen number (stable)
             //
             // NOTE: This formula intentionally avoids LET/XLOOKUP so it works on older Sheets accounts.
-            const latestExpr = `SORTN(SORT(FILTER(${rawQ}!A2:O, LEN(${rawQ}!E2:E)), 2, FALSE), 9^9, 2, 5, TRUE)`;
+            const latestExpr = `SORTN(SORT(FILTER(${rawQ}!A2:P, LEN(${rawQ}!E2:E)), 2, FALSE), 9^9, 2, 5, TRUE)`;
             const minsExpr = `QUERY({${rawQ}!E2:E&"", ${rawQ}!C2:C}, "select Col1, min(Col2) where Col1 is not null group by Col1 label min(Col2) ''", 0)`;
             const firstNoExpr = `(IFERROR(VLOOKUP(INDEX(${latestExpr},,5)&"", ${minsExpr}, 2, FALSE), ))`;
-            const viewFormula = `=IFERROR(QUERY(SORT({
+            // Base view query (16 columns total): includes "Final price (raw)" at far right.
+            // We append a SUM row at the bottom with the sum of calculated Final price (column 8).
+            const baseQuery = `QUERY(SORT({
 ${firstNoExpr},
 INDEX(${latestExpr},,1),
 INDEX(${latestExpr},,2),
@@ -771,29 +908,12 @@ INDEX(${latestExpr},,11),
 INDEX(${latestExpr},,12),
 INDEX(${latestExpr},,13),
 INDEX(${latestExpr},,14),
-INDEX(${latestExpr},,15)
-}, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15", 0), "")`;
+INDEX(${latestExpr},,15),
+INDEX(${latestExpr},,16)
+}, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16,Col17", 0)`;
 
-            // Updated select to include UID (15 columns total, Col2..Col16).
-            // (We keep the old string-building style for maximum compatibility.)
-            const viewFormula2 = `=IFERROR(QUERY(SORT({
-${firstNoExpr},
-INDEX(${latestExpr},,1),
-INDEX(${latestExpr},,2),
-${firstNoExpr},
-INDEX(${latestExpr},,4),
-INDEX(${latestExpr},,5),
-INDEX(${latestExpr},,6),
-INDEX(${latestExpr},,7),
-INDEX(${latestExpr},,8),
-INDEX(${latestExpr},,9),
-INDEX(${latestExpr},,10),
-INDEX(${latestExpr},,11),
-INDEX(${latestExpr},,12),
-INDEX(${latestExpr},,13),
-INDEX(${latestExpr},,14),
-INDEX(${latestExpr},,15)
-}, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16", 0), "")`;
+            const sumRow = `{\"\",\"\",\"\",\"TOTAL\",\"\",\"\",\"\",SUM(INDEX(${baseQuery},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
+            const viewFormula2 = `=IFERROR({${baseQuery};${sumRow}}, "")`;
             await sheetsClient.spreadsheets.values.update({
                 spreadsheetId,
                 range: `${viewTitle}!A2:A2`,
@@ -807,7 +927,7 @@ INDEX(${latestExpr},,15)
 
             function buildStatusFilteredViewFormula(statusText) {
                 const lit = escapeQueryStringLiteral(statusText);
-                return `=IFERROR(QUERY(SORT({
+                const q = `QUERY(SORT({
 ${firstNoExpr},
 INDEX(${latestExpr},,1),
 INDEX(${latestExpr},,2),
@@ -823,8 +943,12 @@ INDEX(${latestExpr},,11),
 INDEX(${latestExpr},,12),
 INDEX(${latestExpr},,13),
 INDEX(${latestExpr},,14),
-INDEX(${latestExpr},,15)
-}, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16 where Col2 = '${lit}'", 0), "")`;
+INDEX(${latestExpr},,15),
+INDEX(${latestExpr},,16)
+}, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16,Col17 where Col2 = '${lit}'", 0)`;
+
+                const footer = `{\"\",\"\",\"\",\"TOTAL\",\"\",\"\",\"\",SUM(INDEX(${q},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
+                return `=IFERROR({${q};${footer}}, "")`;
             }
 
             for (const t of statusFilteredTabsWithIds) {
@@ -860,7 +984,7 @@ INDEX(${latestExpr},,15)
 
             await sheetsClient.spreadsheets.values.append({
                 spreadsheetId,
-                range: `${rawTitle}!A:O`,
+                range: `${rawTitle}!A:P`,
                 valueInputOption: 'USER_ENTERED',
                 insertDataOption: 'INSERT_ROWS',
                 requestBody: { values: rows }
