@@ -193,65 +193,6 @@ function buildStatusDropdownValidationRule() {
     };
 }
 
-function buildTotalSumConditionalFormattingRequest(sheetId) {
-    // TOTAL label is in column G (Original price). Final price sum is in column H.
-    // Apply formatting from row 2 downward.
-    const sumCellsRange = { sheetId, startRowIndex: 1, endRowIndex: 10000, startColumnIndex: 6, endColumnIndex: 8 };
-
-    // Highlight Original price + Final price cells only on the TOTAL row.
-    return {
-        addConditionalFormatRule: {
-            index: 0,
-            rule: {
-                ranges: [sumCellsRange],
-                booleanRule: {
-                    condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=$G2="TOTAL"' }] },
-                    format: {
-                        // Deep saturated green
-                        backgroundColor: { red: 0.0, green: 0.55, blue: 0.2 },
-                        textFormat: {
-                            bold: true,
-                            fontSize: 14,
-                            foregroundColor: { red: 1.0, green: 1.0, blue: 1.0 }
-                        }
-                    }
-                }
-            }
-        }
-    };
-}
-
-function buildTotalSumBorderRequest(sheetId) {
-    // Border around G2:H2 (row 2, columns G-H)
-    const range = { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 6, endColumnIndex: 8 };
-    const border = { style: 'SOLID_THICK', width: 2, color: { red: 1.0, green: 1.0, blue: 1.0 } };
-    return {
-        updateBorders: {
-            range,
-            top: border,
-            bottom: border,
-            left: border,
-            right: border
-        }
-    };
-}
-
-function buildTotalSumAlignmentRequest(sheetId) {
-    // Center-align G2:H2 to make it stand out.
-    return {
-        repeatCell: {
-            range: { sheetId, startRowIndex: 1, endRowIndex: 2, startColumnIndex: 6, endColumnIndex: 8 },
-            cell: {
-                userEnteredFormat: {
-                    horizontalAlignment: 'CENTER',
-                    verticalAlignment: 'MIDDLE'
-                }
-            },
-            fields: 'userEnteredFormat(horizontalAlignment,verticalAlignment)'
-        }
-    };
-}
-
 function buildDetectedAtDateTimeFormat() {
     return {
         numberFormat: {
@@ -1089,47 +1030,6 @@ INDEX(${latestExpr},,16)
                 }
             } catch (e) {
                 console.error(`[Sheets] Freeze rows failed: ${e.message}`);
-            }
-
-            // Make TOTAL sum cells pop (conditional formatting + border) on all view tabs.
-            // Use a marker in Z2 so we don't re-add rules every run.
-            try {
-                const TOTAL_POP_VERSION = 'total_pop_v2';
-
-                const viewTitlesInOrder = [viewTitle, ...statusFilteredTabsWithIds.map(t => t.title)];
-                const viewIdsInOrder = [viewSheetId, ...statusFilteredTabsWithIds.map(t => t.sheetId)];
-                const popMarkers = await Promise.all(viewTitlesInOrder.map(t => getCellValue(t, 'Z2', 'UNFORMATTED_VALUE')));
-
-                const popRequests = [];
-                const markerWrites = [];
-
-                for (let i = 0; i < viewTitlesInOrder.length; i++) {
-                    const sheetTitle = viewTitlesInOrder[i];
-                    const sheetId = Number(viewIdsInOrder[i]);
-                    if (!Number.isFinite(sheetId)) continue;
-
-                    const m = safeString(popMarkers[i]).trim();
-                    if (m === TOTAL_POP_VERSION) continue;
-
-                    popRequests.push(buildTotalSumConditionalFormattingRequest(sheetId));
-                    popRequests.push(buildTotalSumBorderRequest(sheetId));
-                    popRequests.push(buildTotalSumAlignmentRequest(sheetId));
-                    markerWrites.push(sheetTitle);
-                }
-
-                if (popRequests.length > 0) {
-                    await sheetsClient.spreadsheets.batchUpdate({
-                        spreadsheetId,
-                        requestBody: { requests: popRequests }
-                    });
-
-                    for (const title of markerWrites) {
-                        // eslint-disable-next-line no-await-in-loop
-                        await setCellValue(title, 'Z2', TOTAL_POP_VERSION, false);
-                    }
-                }
-            } catch (e) {
-                console.error(`[Sheets] TOTAL pop formatting failed: ${e.message}`);
             }
 
             isReady = true;
