@@ -409,12 +409,57 @@ function createSheetsLogger() {
                 sheetId: sheetIdByTitle.get(t.title) ?? null
             }));
 
-            if (!process.env.GOOGLE_SHEETS_RAW_TAB && rawTitle === 'Original') {
-                try {
-                    await setTabColor(rawSheetId, { red: 1, green: 0, blue: 0 });
-                } catch (e) {
-                    console.error(`[Sheets] Failed to set raw tab color: ${e.message}`);
+            // Color-code tabs for fast scanning.
+            // (We do this in one batchUpdate to reduce API calls.)
+            try {
+                const tabColorRequests = [];
+
+                // Raw tab: very dark red (distinct from Failed).
+                if (!process.env.GOOGLE_SHEETS_RAW_TAB && rawTitle === 'Original') {
+                    tabColorRequests.push({
+                        updateSheetProperties: {
+                            properties: {
+                                sheetId: Number(rawSheetId),
+                                tabColor: { red: 0.35, green: 0.0, blue: 0.0 }
+                            },
+                            fields: 'tabColor'
+                        }
+                    });
                 }
+
+                const colorByTitle = new Map([
+                    ['Accepted', { red: 0.2, green: 0.75, blue: 0.2 }],
+                    // Hot saturated red for Failed
+                    ['Failed', { red: 1.0, green: 0.05, blue: 0.05 }],
+                    ['Ignored: Capacity Full', { red: 1.0, green: 0.85, blue: 0.15 }],
+                    ['Ignored: Low Price', { red: 0.45, green: 0.45, blue: 0.45 }],
+                    ['Check Only', { red: 0.2, green: 0.45, blue: 1.0 }]
+                ]);
+
+                for (const t of statusFilteredTabsWithIds) {
+                    const rgb = colorByTitle.get(t.title);
+                    if (!rgb) continue;
+                    const sid = Number(t.sheetId);
+                    if (!Number.isFinite(sid)) continue;
+                    tabColorRequests.push({
+                        updateSheetProperties: {
+                            properties: {
+                                sheetId: sid,
+                                tabColor: rgb
+                            },
+                            fields: 'tabColor'
+                        }
+                    });
+                }
+
+                if (tabColorRequests.length > 0) {
+                    await sheetsClient.spreadsheets.batchUpdate({
+                        spreadsheetId,
+                        requestBody: { requests: tabColorRequests }
+                    });
+                }
+            } catch (e) {
+                console.error(`[Sheets] Tab color update failed: ${e.message}`);
             }
 
             const headerValues = [[
@@ -435,27 +480,6 @@ function createSheetsLogger() {
                 'Tags',
                 'Final price (raw)'
             ]];
-
-            async function setTabColor(targetSheetId, rgb) {
-                const numericSheetId = Number(targetSheetId);
-                if (!Number.isFinite(numericSheetId)) return;
-                await sheetsClient.spreadsheets.batchUpdate({
-                    spreadsheetId,
-                    requestBody: {
-                        requests: [
-                            {
-                                updateSheetProperties: {
-                                    properties: {
-                                        sheetId: numericSheetId,
-                                        tabColor: rgb
-                                    },
-                                    fields: 'tabColor'
-                                }
-                            }
-                        ]
-                    }
-                });
-            }
 
             // --- ONE-TIME MIGRATION (legacy Jobs -> raw tab) ---
             // If the raw tab is empty, copy any existing rows from the Jobs tab into it once.
@@ -850,35 +874,32 @@ function createSheetsLogger() {
                 });
             }
 
-            // VIEW tab (Jobs): force headers + formula-driven latest-per-Job-ID view.
-            await sheetsClient.spreadsheets.values.update({
-                spreadsheetId,
-                range: `${viewTitle}!A1:P1`,
-                valueInputOption: 'RAW',
-                requestBody: { values: headerValues }
-            });
+            // View tabs setup/versioning:
+            // Clearing A2:Z causes a visible "empty then repopulate" flicker.
+            // Only clear/rewrite when we detect setup hasn't been applied yet.
+            const VIEW_SETUP_VERSION = 'view_setup_v4';
 
-            // Clear any legacy values that would block the spill formula.
-            await sheetsClient.spreadsheets.values.clear({
-                spreadsheetId,
-                range: `${viewTitle}!A2:Z`
-            }).catch(() => null);
+            async function getCellValue(sheetTitle, a1, valueRenderOption) {
+                const res = await sheetsClient.spreadsheets.values.get({
+                    spreadsheetId,
+                    range: `${sheetTitle}!${a1}:${a1}`,
+                    valueRenderOption: valueRenderOption || 'UNFORMATTED_VALUE'
+                }).catch(() => null);
+                return res?.data?.values?.[0]?.[0] ?? '';
+            }
 
-            // Additional view tabs (Accepted/Failed/Ignored...): headers + spill formulas.
-            for (const t of statusFilteredTabsWithIds) {
-                if (!t.sheetId) continue;
+            async function setCellValue(sheetTitle, a1, value, userEntered) {
                 await sheetsClient.spreadsheets.values.update({
                     spreadsheetId,
-                    range: `${t.title}!A1:P1`,
-                    valueInputOption: 'RAW',
-                    requestBody: { values: headerValues }
+                    range: `${sheetTitle}!${a1}:${a1}`,
+                    valueInputOption: userEntered ? 'USER_ENTERED' : 'RAW',
+                    requestBody: { values: [[value]] }
                 });
-
-                await sheetsClient.spreadsheets.values.clear({
-                    spreadsheetId,
-                    range: `${t.title}!A2:Z`
-                }).catch(() => null);
             }
+
+            const viewSheetTitles = [viewTitle, ...statusFilteredTabsWithIds.map(t => t.title)];
+            const markers = await Promise.all(viewSheetTitles.map(t => getCellValue(t, 'Z1', 'UNFORMATTED_VALUE')));
+            const markerByTitle = new Map(viewSheetTitles.map((t, i) => [t, safeString(markers[i]).trim()]));
 
             const rawQ = quoteSheetName(rawTitle);
             // Jobs view (compat-friendly; avoids LET):
@@ -914,12 +935,36 @@ INDEX(${latestExpr},,16)
 
             const sumRow = `{\"\",\"\",\"\",\"TOTAL\",\"\",\"\",\"\",SUM(INDEX(${baseQuery},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
             const viewFormula2 = `=IFERROR({${baseQuery};${sumRow}}, "")`;
-            await sheetsClient.spreadsheets.values.update({
-                spreadsheetId,
-                range: `${viewTitle}!A2:A2`,
-                valueInputOption: 'USER_ENTERED',
-                requestBody: { values: [[viewFormula2]] }
-            });
+
+            async function ensureViewTab({ sheetTitle, desiredFormula }) {
+                const marker = markerByTitle.get(sheetTitle);
+                const needsReset = marker !== VIEW_SETUP_VERSION;
+
+                if (needsReset) {
+                    await sheetsClient.spreadsheets.values.update({
+                        spreadsheetId,
+                        range: `${sheetTitle}!A1:P1`,
+                        valueInputOption: 'RAW',
+                        requestBody: { values: headerValues }
+                    });
+
+                    // Clear any legacy values that would block the spill formula.
+                    await sheetsClient.spreadsheets.values.clear({
+                        spreadsheetId,
+                        range: `${sheetTitle}!A2:Z`
+                    }).catch(() => null);
+
+                    await setCellValue(sheetTitle, 'A2', desiredFormula, true);
+                    await setCellValue(sheetTitle, 'Z1', VIEW_SETUP_VERSION, false);
+                    return;
+                }
+
+                // Marker matches; only repair the formula if A2 is empty/non-formula.
+                const a2 = safeString(await getCellValue(sheetTitle, 'A2', 'FORMULA')).trim();
+                if (!a2.startsWith('=')) {
+                    await setCellValue(sheetTitle, 'A2', desiredFormula, true);
+                }
+            }
 
             function escapeQueryStringLiteral(s) {
                 return String(s || '').replace(/'/g, "''");
@@ -951,14 +996,10 @@ INDEX(${latestExpr},,16)
                 return `=IFERROR({${q};${footer}}, "")`;
             }
 
+            await ensureViewTab({ sheetTitle: viewTitle, desiredFormula: viewFormula2 });
             for (const t of statusFilteredTabsWithIds) {
                 if (!t.sheetId) continue;
-                await sheetsClient.spreadsheets.values.update({
-                    spreadsheetId,
-                    range: `${t.title}!A2:A2`,
-                    valueInputOption: 'USER_ENTERED',
-                    requestBody: { values: [[buildStatusFilteredViewFormula(t.statusText)]] }
-                });
+                await ensureViewTab({ sheetTitle: t.title, desiredFormula: buildStatusFilteredViewFormula(t.statusText) });
             }
 
             isReady = true;
