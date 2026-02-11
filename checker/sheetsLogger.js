@@ -194,6 +194,29 @@ function buildStatusDropdownValidationRule() {
 }
 
 function buildDetectedAtDateTimeFormat() {
+
+    function buildTotalSumConditionalFormattingRequest(sheetId) {
+        // Final price is column H (index 7). Apply formatting from row 2 downward.
+        const sumCellRange = { sheetId, startRowIndex: 1, endRowIndex: 10000, startColumnIndex: 7, endColumnIndex: 8 };
+
+        // Highlight the Final price cell only on the TOTAL row.
+        // TOTAL label is in column D in our view output.
+        return {
+            addConditionalFormatRule: {
+                index: 0,
+                rule: {
+                    ranges: [sumCellRange],
+                    booleanRule: {
+                        condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=$D2="TOTAL"' }] },
+                        format: {
+                            backgroundColor: { red: 1.0, green: 0.92, blue: 0.35 },
+                            textFormat: { bold: true, fontSize: 14, foregroundColor: { red: 0.05, green: 0.05, blue: 0.05 } }
+                        }
+                    }
+                }
+            }
+        };
+    }
     return {
         numberFormat: {
             type: 'DATE_TIME',
@@ -877,7 +900,7 @@ function createSheetsLogger() {
             // View tabs setup/versioning:
             // Clearing A2:Z causes a visible "empty then repopulate" flicker.
             // Only clear/rewrite when we detect setup hasn't been applied yet.
-            const VIEW_SETUP_VERSION = 'view_setup_v4';
+            const VIEW_SETUP_VERSION = 'view_setup_v5';
 
             async function getCellValue(sheetTitle, a1, valueRenderOption) {
                 const res = await sheetsClient.spreadsheets.values.get({
@@ -959,7 +982,8 @@ INDEX(${latestExpr},,16)
                     return;
                 }
 
-                // Marker matches; only repair the formula if A2 is empty/non-formula.
+                            // Place TOTAL row first so we can freeze it.
+                            const viewFormula2 = `=IFERROR({${sumRow};${baseQuery}}, "")`;
                 const a2 = safeString(await getCellValue(sheetTitle, 'A2', 'FORMULA')).trim();
                 if (!a2.startsWith('=')) {
                     await setCellValue(sheetTitle, 'A2', desiredFormula, true);
@@ -996,10 +1020,77 @@ INDEX(${latestExpr},,16)
                 return `=IFERROR({${q};${footer}}, "")`;
             }
 
-            await ensureViewTab({ sheetTitle: viewTitle, desiredFormula: viewFormula2 });
+                            return `=IFERROR({${footer};${q}}, "")`;
             for (const t of statusFilteredTabsWithIds) {
                 if (!t.sheetId) continue;
                 await ensureViewTab({ sheetTitle: t.title, desiredFormula: buildStatusFilteredViewFormula(t.statusText) });
+            }
+
+            // Freeze header + TOTAL row on all view tabs.
+            // (Sheets can only freeze top rows, so TOTAL must be at the top.)
+            try {
+                const freezeRequests = [];
+                const allViewSheetIds = [viewSheetId, ...statusFilteredTabsWithIds.map(t => t.sheetId)].filter(Boolean);
+                for (const sid of allViewSheetIds) {
+                    const numeric = Number(sid);
+                    if (!Number.isFinite(numeric)) continue;
+                    freezeRequests.push({
+                        updateSheetProperties: {
+                            properties: {
+                                sheetId: numeric,
+                                gridProperties: { frozenRowCount: 2 }
+                            },
+                            fields: 'gridProperties.frozenRowCount'
+                        }
+                    });
+                }
+                if (freezeRequests.length > 0) {
+                    await sheetsClient.spreadsheets.batchUpdate({
+                        spreadsheetId,
+                        requestBody: { requests: freezeRequests }
+                    });
+                }
+            } catch (e) {
+                console.error(`[Sheets] Freeze rows failed: ${e.message}`);
+            }
+
+            // Make TOTAL sum cell pop (conditional formatting) on all view tabs.
+            try {
+                const metaCF = await sheetsClient.spreadsheets.get({
+                    spreadsheetId,
+                    fields: 'sheets(properties(sheetId,title),conditionalFormats)'
+                });
+
+                const sheetsCF = metaCF.data.sheets || [];
+                const needAdd = [];
+                const desiredFormula = '=$D2="TOTAL"';
+
+                for (const sid of [viewSheetId, ...statusFilteredTabsWithIds.map(t => t.sheetId)]) {
+                    const numericSid = Number(sid);
+                    if (!Number.isFinite(numericSid)) continue;
+                    const sh = sheetsCF.find(s => Number(s?.properties?.sheetId) === numericSid);
+                    const rules = sh?.conditionalFormats || [];
+                    const already = rules.some(r => {
+                        const cond = r?.booleanRule?.condition;
+                        const isCustom = cond?.type === 'CUSTOM_FORMULA';
+                        const v = cond?.values?.[0]?.userEnteredValue;
+                        if (!isCustom || safeString(v).trim() !== desiredFormula) return false;
+                        const ranges = r?.ranges || [];
+                        return ranges.some(rr => (rr.startColumnIndex ?? -1) === 7 && (rr.endColumnIndex ?? -1) === 8);
+                    });
+                    if (!already) {
+                        needAdd.push(buildTotalSumConditionalFormattingRequest(numericSid));
+                    }
+                }
+
+                if (needAdd.length > 0) {
+                    await sheetsClient.spreadsheets.batchUpdate({
+                        spreadsheetId,
+                        requestBody: { requests: needAdd }
+                    });
+                }
+            } catch (e) {
+                console.error(`[Sheets] TOTAL cell formatting failed: ${e.message}`);
             }
 
             isReady = true;
