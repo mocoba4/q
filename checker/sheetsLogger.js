@@ -193,30 +193,34 @@ function buildStatusDropdownValidationRule() {
     };
 }
 
-function buildDetectedAtDateTimeFormat() {
+function buildTotalSumConditionalFormattingRequest(sheetId) {
+    // Final price is column H (index 7). Apply formatting from row 2 downward.
+    const sumCellRange = { sheetId, startRowIndex: 1, endRowIndex: 10000, startColumnIndex: 7, endColumnIndex: 8 };
 
-    function buildTotalSumConditionalFormattingRequest(sheetId) {
-        // Final price is column H (index 7). Apply formatting from row 2 downward.
-        const sumCellRange = { sheetId, startRowIndex: 1, endRowIndex: 10000, startColumnIndex: 7, endColumnIndex: 8 };
-
-        // Highlight the Final price cell only on the TOTAL row.
-        // TOTAL label is in column D in our view output.
-        return {
-            addConditionalFormatRule: {
-                index: 0,
-                rule: {
-                    ranges: [sumCellRange],
-                    booleanRule: {
-                        condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=$D2="TOTAL"' }] },
-                        format: {
-                            backgroundColor: { red: 1.0, green: 0.92, blue: 0.35 },
-                            textFormat: { bold: true, fontSize: 14, foregroundColor: { red: 0.05, green: 0.05, blue: 0.05 } }
+    // Highlight the Final price cell only on the TOTAL row.
+    // TOTAL label is in column D in our view output.
+    return {
+        addConditionalFormatRule: {
+            index: 0,
+            rule: {
+                ranges: [sumCellRange],
+                booleanRule: {
+                    condition: { type: 'CUSTOM_FORMULA', values: [{ userEnteredValue: '=$D2="TOTAL"' }] },
+                    format: {
+                        backgroundColor: { red: 1.0, green: 0.92, blue: 0.35 },
+                        textFormat: {
+                            bold: true,
+                            fontSize: 14,
+                            foregroundColor: { red: 0.05, green: 0.05, blue: 0.05 }
                         }
                     }
                 }
             }
-        };
-    }
+        }
+    };
+}
+
+function buildDetectedAtDateTimeFormat() {
     return {
         numberFormat: {
             type: 'DATE_TIME',
@@ -957,7 +961,8 @@ INDEX(${latestExpr},,16)
 }, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16,Col17", 0)`;
 
             const sumRow = `{\"\",\"\",\"\",\"TOTAL\",\"\",\"\",\"\",SUM(INDEX(${baseQuery},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
-            const viewFormula2 = `=IFERROR({${baseQuery};${sumRow}}, "")`;
+            // Place TOTAL row first so we can freeze it.
+            const viewFormula2 = `=IFERROR({${sumRow};${baseQuery}}, "")`;
 
             async function ensureViewTab({ sheetTitle, desiredFormula }) {
                 const marker = markerByTitle.get(sheetTitle);
@@ -982,10 +987,9 @@ INDEX(${latestExpr},,16)
                     return;
                 }
 
-                            // Place TOTAL row first so we can freeze it.
-                            const viewFormula2 = `=IFERROR({${sumRow};${baseQuery}}, "")`;
                 const a2 = safeString(await getCellValue(sheetTitle, 'A2', 'FORMULA')).trim();
-                if (!a2.startsWith('=')) {
+                const desired = safeString(desiredFormula).trim();
+                if (!a2.startsWith('=') || a2 !== desired) {
                     await setCellValue(sheetTitle, 'A2', desiredFormula, true);
                 }
             }
@@ -1017,10 +1021,10 @@ INDEX(${latestExpr},,16)
 }, 1, TRUE), "select Col2,Col3,Col4,Col5,Col6,Col7,Col8,Col9,Col10,Col11,Col12,Col13,Col14,Col15,Col16,Col17 where Col2 = '${lit}'", 0)`;
 
                 const footer = `{\"\",\"\",\"\",\"TOTAL\",\"\",\"\",\"\",SUM(INDEX(${q},,8)),\"\",\"\",\"\",\"\",\"\",\"\",\"\",\"\"}`;
-                return `=IFERROR({${q};${footer}}, "")`;
+                return `=IFERROR({${footer};${q}}, "")`;
             }
 
-                            return `=IFERROR({${footer};${q}}, "")`;
+            await ensureViewTab({ sheetTitle: viewTitle, desiredFormula: viewFormula2 });
             for (const t of statusFilteredTabsWithIds) {
                 if (!t.sheetId) continue;
                 await ensureViewTab({ sheetTitle: t.title, desiredFormula: buildStatusFilteredViewFormula(t.statusText) });
