@@ -933,13 +933,21 @@ async function run() {
     // --- BURST MODE (default; not secret-toggled) ---
     // When we detect ANY jobs, switch to 1s refresh cadence to avoid missing updates.
     // After jobs disappear, keep 1s cadence for 60s; if still no jobs, return to normal cadence.
+    // Soft-ban mitigation: during burst, rotate the 1s refresh load across spotter accounts.
     const BURST_REFRESH_MS = 1000;
     const BURST_GRACE_NO_JOB_MS = 60 * 1000;
+    const BURST_SPOTTER_SLICE_MS = 30 * 1000;
     let burstActive = false;
     let burstLastJobSeenAt = 0;
+    let burstEnteredAt = 0;
+    let lastBurstSpotterId = null;
 
     function enterBurstMode(reason) {
         const now = Date.now();
+        if (!burstActive) {
+            burstEnteredAt = now;
+            lastBurstSpotterId = null;
+        }
         burstActive = true;
         burstLastJobSeenAt = now;
         if (NUCLEAR_ACCEPT_ENABLED) nuclearBurstSeenSinceLastReconcile = true;
@@ -1477,14 +1485,24 @@ async function run() {
             try {
                 // Dual-spotter check cadence: split CHECK_INTERVAL across Account 1 + Account 2.
                 // This yields: A1 check, wait half-interval, A2 check, wait half-interval, repeat.
-                const spotters = burstActive
-                    ? [Agent1]
-                    : ((!CONFIG.checkOnly && Agent2) ? [Agent1, Agent2] : [Agent1]);
+                const spotters = (!CONFIG.checkOnly && Agent2) ? [Agent1, Agent2] : [Agent1];
                 const baseCycleMs = burstActive ? BURST_REFRESH_MS : MIN_CYCLE_DURATION;
                 const subCycleMs = burstActive
                     ? BURST_REFRESH_MS
                     : Math.max(500, Math.floor(baseCycleMs / spotters.length));
-                const activeSpotter = spotters[(iterations - 1) % spotters.length];
+
+                let activeSpotter;
+                if (burstActive && spotters.length > 1) {
+                    const age = Math.max(0, Date.now() - (burstEnteredAt || Date.now()));
+                    const slot = Math.floor(age / BURST_SPOTTER_SLICE_MS) % spotters.length;
+                    activeSpotter = spotters[slot];
+                    if (lastBurstSpotterId !== activeSpotter.id) {
+                        lastBurstSpotterId = activeSpotter.id;
+                        console.log(`🟠 Burst spotter rotation: using Account ${activeSpotter.id} for next ${Math.round(BURST_SPOTTER_SLICE_MS / 1000)}s.`);
+                    }
+                } else {
+                    activeSpotter = spotters[(iterations - 1) % spotters.length];
+                }
 
                 // 1. Refresh active Spotter
                 if (activeSpotter.page.url().includes(CONFIG.url)) {
