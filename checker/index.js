@@ -154,6 +154,40 @@ const parseCapacity = (str) => {
 const isTruthyEnv = (v) => /^(1|true|on|yes)$/i.test(String(v || '').trim());
 const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
 
+// Global per-account caps: limit how many tasks of each type we are willing to hold,
+// regardless of the UI's max capacity. Example: if UI shows 6/12 and MAX_TAKE_GROUPED=8,
+// we will accept at most 2 more grouped tasks (to reach 8/12).
+function parsePositiveIntOrNull(v) {
+    const n = parseInt(String(v ?? '').trim(), 10);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+const MAX_TAKE_SINGLE = parsePositiveIntOrNull(process.env.MAX_TAKE_SINGLE);
+const MAX_TAKE_GROUPED = parsePositiveIntOrNull(process.env.MAX_TAKE_GROUPED);
+
+function applyGlobalTakeCaps(cap) {
+    const out = JSON.parse(JSON.stringify(cap || { single: { current: 0, max: 0, available: 0 }, grouped: { current: 0, max: 0, available: 0 } }));
+
+    const singleLimit = MAX_TAKE_SINGLE;
+    const groupedLimit = MAX_TAKE_GROUPED;
+
+    if (singleLimit) {
+        const cur = Number(out?.single?.current) || 0;
+        const avail = Number(out?.single?.available) || 0;
+        const allowedRemaining = Math.max(0, singleLimit - cur);
+        out.single.available = Math.min(avail, allowedRemaining);
+    }
+
+    if (groupedLimit) {
+        const cur = Number(out?.grouped?.current) || 0;
+        const avail = Number(out?.grouped?.available) || 0;
+        const allowedRemaining = Math.max(0, groupedLimit - cur);
+        out.grouped.available = Math.min(avail, allowedRemaining);
+    }
+
+    return out;
+}
+
 const sleep = (ms) => new Promise(r => setTimeout(r, Math.max(0, ms || 0)));
 
 function getNuclearDelayBounds() {
@@ -1001,8 +1035,13 @@ async function run() {
     await Promise.all(agents.map(async (agent) => {
         const cap = await getCapacity(agent.page);
         capacityCache[agent.id] = cap;
-        expectedCapacityCache[agent.id] = JSON.parse(JSON.stringify(cap));
-        console.log(`[Account ${agent.id}] Init Capacity: Single ${cap.single.available} | Grouped ${cap.grouped.available}`);
+        expectedCapacityCache[agent.id] = applyGlobalTakeCaps(cap);
+
+        const eff = expectedCapacityCache[agent.id];
+        const capNote = (MAX_TAKE_SINGLE || MAX_TAKE_GROUPED)
+            ? ` (caps: single=${MAX_TAKE_SINGLE ?? 'off'}, grouped=${MAX_TAKE_GROUPED ?? 'off'})`
+            : '';
+        console.log(`[Account ${agent.id}] Init Capacity: Single ${eff.single.available}/${cap.single.available} | Grouped ${eff.grouped.available}/${cap.grouped.available}${capNote}`);
     }));
 
     // --- MAIN LOOP ---
@@ -1106,9 +1145,11 @@ async function run() {
                 const act = actual[id];
                 if (!exp || !act) continue;
 
+                const actEff = applyGlobalTakeCaps(act);
+
                 for (const t of ['single', 'grouped']) {
                     const eAvail = exp?.[t]?.available;
-                    const aAvail = act?.[t]?.available;
+                    const aAvail = actEff?.[t]?.available;
                     if (Number(eAvail) !== Number(aAvail)) {
                         mismatches.push(`A${id} ${t}: expected ${eAvail} vs actual ${aAvail}`);
                     }
@@ -1119,7 +1160,7 @@ async function run() {
             for (const [idStr, cap] of Object.entries(actual)) {
                 const id = Number(idStr);
                 capacityCache[id] = cap;
-                expectedCapacityCache[id] = JSON.parse(JSON.stringify(cap));
+                expectedCapacityCache[id] = applyGlobalTakeCaps(cap);
             }
 
             if (mismatches.length > 0) {
@@ -1358,6 +1399,9 @@ async function run() {
                         continue;
                     }
 
+                    // Reserve capacity now so we don't over-dispatch while requests are in-flight.
+                    applyExpectedCapacityDelta(agent.id, requiredType, 1);
+
                     // Fire accept attempt now; confirmation can complete while we dispatch the next jobs.
                     inFlight.push(
                         (async () => {
@@ -1374,8 +1418,9 @@ async function run() {
                     const { agent, job, requiredType, res } = item;
                     if (res && res.ok) {
                         sheetsLogger.enqueue(job, 'taken');
-                        applyExpectedCapacityDelta(agent.id, requiredType, 1);
                     } else {
+                        // Roll back the reserved slot if we didn't actually take it.
+                        applyExpectedCapacityDelta(agent.id, requiredType, -1);
                         sheetsLogger.enqueue(job, 'failed');
                     }
                 }
@@ -1434,8 +1479,9 @@ async function run() {
                     await Promise.all(agents.map(async (agent) => {
                         const cap = await getCapacity(agent.page);
                         capacityCache[agent.id] = cap;
-                        expectedCapacityCache[agent.id] = JSON.parse(JSON.stringify(cap));
-                        console.log(`[Account ${agent.id}] Capacity updated: ${cap.single.available}/${cap.grouped.available}`);
+                        expectedCapacityCache[agent.id] = applyGlobalTakeCaps(cap);
+                        const eff = expectedCapacityCache[agent.id];
+                        console.log(`[Account ${agent.id}] Capacity updated: Single ${eff.single.available}/${cap.single.available} | Grouped ${eff.grouped.available}/${cap.grouped.available}`);
                     }));
                 }
             } catch (e) {
