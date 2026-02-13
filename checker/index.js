@@ -158,7 +158,13 @@ const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
 // regardless of the UI's max capacity. Example: if UI shows 6/12 and MAX_TAKE_GROUPED=8,
 // we will accept at most 2 more grouped tasks (to reach 8/12).
 function parsePositiveIntOrNull(v) {
-    const n = parseInt(String(v ?? '').trim(), 10);
+    const s = String(v ?? '').trim();
+    // Empty / unset => disabled cap (original behavior)
+    if (!s) return null;
+    // Explicit opt-out: allow setting secret to "max" to mean "no cap".
+    if (/^max$/i.test(s)) return null;
+
+    const n = parseInt(s, 10);
     return Number.isFinite(n) && n > 0 ? n : null;
 }
 
