@@ -291,9 +291,12 @@ async function processJobNuclear(agent, job) {
         async function confirmAcceptedViaActions() {
             // Based on captured UI accept traces:
             // after a successful accept, GET /api-internal/modeling-requests/:id/actions no longer contains the 'accepted' action.
-            const actionsUrl = `${origin}/api-internal/modeling-requests/${encodeURIComponent(String(job.id))}/actions`;
+            // NOTE: The accept POST may succeed slightly before the actions endpoint reflects the new state.
+            // We wait briefly, then do a single check with a cache-buster query param.
+            const actionsUrl = `${origin}/api-internal/modeling-requests/${encodeURIComponent(String(job.id))}/actions?_=${Date.now()}`;
 
             try {
+                await sleep(450);
                 const r = await agent.context.request.get(actionsUrl, {
                     headers: {
                         'accept': 'application/json, text/plain, */*',
@@ -1330,6 +1333,12 @@ async function run() {
                 const { minMs, maxMs } = getNuclearDelayBounds();
                 console.log(`⚡ Nuclear mode: processing ${orderedPlan.length} jobs sequentially (${minMs}-${maxMs}ms spacing).`);
 
+                // Pipeline nuclear accepts:
+                // - Dispatch accept POSTs spaced by getNuclearDelayMs()
+                // - Do NOT wait for confirmation before dispatching the next job
+                // - Await all results at the end to log Sheets + adjust expected capacity
+                const inFlight = [];
+
                 for (const step of orderedPlan) {
                     const agent = step.agent;
                     const job = step.job;
@@ -1349,18 +1358,26 @@ async function run() {
                         continue;
                     }
 
-                    const res = await processJob(agent, job);
-
-                    if (res && res.ok) {
-                        sheetsLogger.enqueue(job, 'taken');
-                        // Keep local expected capacity roughly in sync.
-                        applyExpectedCapacityDelta(agent.id, requiredType, 1);
-                    } else {
-                        // Treat any non-200 (including 403) as failed to take for Sheets.
-                        sheetsLogger.enqueue(job, 'failed');
-                    }
+                    // Fire accept attempt now; confirmation can complete while we dispatch the next jobs.
+                    inFlight.push(
+                        (async () => {
+                            const res = await processJob(agent, job);
+                            return { agent, job, requiredType, res };
+                        })()
+                    );
 
                     await sleep(getNuclearDelayMs());
+                }
+
+                const done = await Promise.all(inFlight);
+                for (const item of done) {
+                    const { agent, job, requiredType, res } = item;
+                    if (res && res.ok) {
+                        sheetsLogger.enqueue(job, 'taken');
+                        applyExpectedCapacityDelta(agent.id, requiredType, 1);
+                    } else {
+                        sheetsLogger.enqueue(job, 'failed');
+                    }
                 }
             } else {
                 await Promise.all(agents.map(async (agent) => {
