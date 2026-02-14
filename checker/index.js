@@ -153,6 +153,13 @@ const parseCapacity = (str) => {
 
 const isTruthyEnv = (v) => /^(1|true|on|yes)$/i.test(String(v || '').trim());
 const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
+// Nuclear confirmation is intentionally opt-in.
+// Reason: the UI's /actions endpoint has shown inconsistent/stale behavior in the wild.
+// Default OFF restores legacy success detection (HTTP-level checks).
+const NUCLEAR_CONFIRM_ACTIONS = isTruthyEnv(process.env.NUCLEAR_CONFIRM_ACTIONS || '');
+// If enabled, treat a negative /actions confirmation as a hard failure.
+// Default OFF: negative confirmation only logs a warning (prevents false negatives).
+const NUCLEAR_CONFIRM_STRICT = isTruthyEnv(process.env.NUCLEAR_CONFIRM_STRICT || '');
 
 // Global per-account caps: limit how many tasks of each type we are willing to hold,
 // regardless of the UI's max capacity. Example: if UI shows 6/12 and MAX_TAKE_GROUPED=8,
@@ -415,14 +422,19 @@ async function processJobNuclear(agent, job) {
                 }
             }
 
-            // Strong confirmation: verify UI actions no longer show 'Accept tasks'.
-            const confirm = await confirmAcceptedViaActions();
-            if (confirm.verified && !confirm.ok) {
-                console.log(`[Account ${agent.id}] ❌ Nuclear accept got HTTP 200 but confirmation failed (${confirm.reason}). Treating as NOT taken.`);
-                return { ok: false, reason: confirm.reason, method: 'nuclear', status };
-            }
-            if (!confirm.verified) {
-                console.log(`[Account ${agent.id}] ⚠️ Nuclear accept confirmation not verified (${confirm.reason}). Proceeding as success based on HTTP response.`);
+            // Optional confirmation (opt-in): verify state via /actions.
+            if (NUCLEAR_CONFIRM_ACTIONS) {
+                const confirm = await confirmAcceptedViaActions();
+
+                if (confirm.verified && !confirm.ok) {
+                    if (NUCLEAR_CONFIRM_STRICT) {
+                        console.log(`[Account ${agent.id}] ❌ Nuclear accept got HTTP 200 but STRICT confirmation failed (${confirm.reason}). Treating as NOT taken.`);
+                        return { ok: false, reason: confirm.reason, method: 'nuclear', status };
+                    }
+                    console.log(`[Account ${agent.id}] ⚠️ Nuclear accept got HTTP 200 but confirmation looks negative (${confirm.reason}). Proceeding as success (non-strict).`);
+                } else if (!confirm.verified) {
+                    console.log(`[Account ${agent.id}] ⚠️ Nuclear accept confirmation not verified (${confirm.reason}). Proceeding as success based on HTTP response.`);
+                }
             }
 
             const rawPrice = String(job?.price ?? '').split('').join(' ');
@@ -889,7 +901,10 @@ async function run() {
 
     if (NUCLEAR_ACCEPT_ENABLED) {
         const { minMs, maxMs } = getNuclearDelayBounds();
-        console.log(`⚡ NUCLEAR_ACCEPT is ENABLED. Accepts use direct POST with ${minMs}-${maxMs}ms spacing (sequential).`);
+        console.log(`⚡ NUCLEAR_ACCEPT is ENABLED. Accepts use direct POST with ${minMs}-${maxMs}ms spacing (pipelined).`);
+        if (NUCLEAR_CONFIRM_ACTIONS) {
+            console.log(`⚙️ Nuclear confirm: /actions=${NUCLEAR_CONFIRM_ACTIONS ? 'on' : 'off'}, strict=${NUCLEAR_CONFIRM_STRICT ? 'on' : 'off'}`);
+        }
     } else {
         console.log('🧭 NUCLEAR_ACCEPT is disabled. Using UI click flow.');
     }
