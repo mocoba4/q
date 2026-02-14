@@ -1,4 +1,4 @@
-# Copilot instructions (redacted check APP)
+# Copilot instructions (Checker)
 
 ## Big picture
 - This repo is a Node.js automation “checker” that watches a CGTrader modeling-requests page and (optionally) auto-accepts jobs fast.

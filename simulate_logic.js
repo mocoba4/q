@@ -1,6 +1,8 @@
 // Mock Configuration
 const CONFIG = {
-    url: 'https://example.invalid/modeling-requests'
+    // Sandbox-only: use a placeholder URL so this repo doesn't leak target hostnames.
+    // The main checker uses TARGET_URL / LOGIN_URL from environment variables.
+    url: 'https://example.com/modeling-requests'
 };
 
 // The user-provided JSON (Mocking the stars with likely numbers for parsing demo)

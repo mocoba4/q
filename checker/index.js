@@ -744,7 +744,7 @@ async function processJob(agent, job) {
 
             // SIMPLE VERIFICATION:
             // If we successfully clicked BOTH Accept + Yes, and we are NOT redirected to
-            // https://example.invalid/modeling-requests?forbidden=true, count as taken.
+            // /modeling-requests?forbidden=true, count as taken.
             if (clickedAccept && clickedYes) {
                 try {
                     await page.waitForTimeout(1000);
