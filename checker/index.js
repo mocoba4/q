@@ -153,13 +153,6 @@ const parseCapacity = (str) => {
 
 const isTruthyEnv = (v) => /^(1|true|on|yes)$/i.test(String(v || '').trim());
 const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
-// Nuclear confirmation is intentionally opt-in.
-// Reason: the UI's /actions endpoint has shown inconsistent/stale behavior in the wild.
-// Default OFF restores legacy success detection (HTTP-level checks).
-const NUCLEAR_CONFIRM_ACTIONS = isTruthyEnv(process.env.NUCLEAR_CONFIRM_ACTIONS || '');
-// If enabled, treat a negative /actions confirmation as a hard failure.
-// Default OFF: negative confirmation only logs a warning (prevents false negatives).
-const NUCLEAR_CONFIRM_STRICT = isTruthyEnv(process.env.NUCLEAR_CONFIRM_STRICT || '');
 
 // Global per-account caps: limit how many tasks of each type we are willing to hold,
 // regardless of the UI's max capacity. Example: if UI shows 6/12 and MAX_TAKE_GROUPED=8,
@@ -335,46 +328,6 @@ async function processJobNuclear(agent, job) {
             return { ok: false, reason: 'missing_csrf' };
         }
 
-        async function confirmAcceptedViaActions() {
-            // Based on captured UI accept traces:
-            // after a successful accept, GET /api-internal/modeling-requests/:id/actions no longer contains the 'accepted' action.
-            // NOTE: The accept POST may succeed slightly before the actions endpoint reflects the new state.
-            // We wait briefly, then do a single check with a cache-buster query param.
-            const actionsUrl = `${origin}/api-internal/modeling-requests/${encodeURIComponent(String(job.id))}/actions?_=${Date.now()}`;
-
-            try {
-                await sleep(450);
-                const r = await agent.context.request.get(actionsUrl, {
-                    headers: {
-                        'accept': 'application/json, text/plain, */*',
-                        'referer': job.url,
-                        'x-csrf-token': csrfToken
-                    }
-                });
-
-                if (r.status() !== 200) {
-                    return { ok: true, verified: false, reason: `actions_http_${r.status()}` };
-                }
-
-                const body = await r.json();
-                const actions = Array.isArray(body?.data) ? body.data : [];
-                const stillHasAccept = actions.some(a => {
-                    const id = String(a?.id || '').toLowerCase();
-                    const name = String(a?.attributes?.name || '').toLowerCase();
-                    const path = String(a?.attributes?.path || '').toLowerCase();
-                    return id === 'accepted' || name === 'accepted' || path.includes('update-status?status=accepted');
-                });
-
-                return {
-                    ok: !stillHasAccept,
-                    verified: true,
-                    reason: stillHasAccept ? 'actions_still_show_accept' : 'actions_no_accept'
-                };
-            } catch (_) {
-                return { ok: true, verified: false, reason: 'actions_unverified' };
-            }
-        }
-
         const displayUrl = (job?.url || '').replace('https://', 'https:// ');
         console.log(`[Account ${agent.id}] ⚡ Nuclear accept: ${displayUrl}`);
 
@@ -391,52 +344,6 @@ async function processJobNuclear(agent, job) {
 
         const status = resp.status();
         if (status === 200) {
-            // IMPORTANT: Playwright's APIRequestContext follows redirects.
-            // A session-expired redirect to login can still end as HTTP 200 (HTML), which would be a false positive.
-            const finalUrl = (typeof resp.url === 'function' ? resp.url() : '') || '';
-            const headers = (typeof resp.headers === 'function' ? resp.headers() : {}) || {};
-            const contentType = String(headers['content-type'] || headers['Content-Type'] || '').toLowerCase();
-
-            const finalUrlLower = finalUrl.toLowerCase();
-            const looksLikeLoginRedirect = /\b(login|sign[_-]?in)\b/.test(finalUrlLower) || finalUrlLower.includes('/users/sign_in');
-            const isHtml = contentType.includes('text/html');
-
-            if (looksLikeLoginRedirect || isHtml) {
-                console.log(`[Account ${agent.id}] ❌ Nuclear accept got HTTP 200 but looks like redirect/HTML (finalUrl=${finalUrl.replace('https://', 'https:// ')}, content-type=${contentType || 'unknown'}).`);
-                return { ok: false, reason: 'http_200_redirect_or_html', method: 'nuclear', status };
-            }
-
-            // If JSON is returned, validate it doesn't contain an error.
-            if (contentType.includes('application/json')) {
-                try {
-                    const body = await resp.json();
-                    const message = String(body?.message || body?.error || '').toLowerCase();
-                    const hasErrors = Array.isArray(body?.errors) && body.errors.length > 0;
-
-                    if (hasErrors || message.includes('forbidden') || message.includes('not authorized') || message.includes('too late')) {
-                        console.log(`[Account ${agent.id}] ❌ Nuclear accept got HTTP 200 JSON but indicates failure (errors=${hasErrors ? body.errors.length : 0}, message=${message ? message.split('').join(' ') : 'n/a'}).`);
-                        return { ok: false, reason: 'http_200_json_indicates_failure', method: 'nuclear', status };
-                    }
-                } catch (_) {
-                    // If parsing fails, we fall back to trusting 200 (but it's not HTML/login).
-                }
-            }
-
-            // Optional confirmation (opt-in): verify state via /actions.
-            if (NUCLEAR_CONFIRM_ACTIONS) {
-                const confirm = await confirmAcceptedViaActions();
-
-                if (confirm.verified && !confirm.ok) {
-                    if (NUCLEAR_CONFIRM_STRICT) {
-                        console.log(`[Account ${agent.id}] ❌ Nuclear accept got HTTP 200 but STRICT confirmation failed (${confirm.reason}). Treating as NOT taken.`);
-                        return { ok: false, reason: confirm.reason, method: 'nuclear', status };
-                    }
-                    console.log(`[Account ${agent.id}] ⚠️ Nuclear accept got HTTP 200 but confirmation looks negative (${confirm.reason}). Proceeding as success (non-strict).`);
-                } else if (!confirm.verified) {
-                    console.log(`[Account ${agent.id}] ⚠️ Nuclear accept confirmation not verified (${confirm.reason}). Proceeding as success based on HTTP response.`);
-                }
-            }
-
             const rawPrice = String(job?.price ?? '').split('').join(' ');
             console.log(`[Account ${agent.id}] ✅ Nuclear accept SUCCESS (HTTP 200). Price: [ ${rawPrice} ]`);
 
@@ -902,9 +809,6 @@ async function run() {
     if (NUCLEAR_ACCEPT_ENABLED) {
         const { minMs, maxMs } = getNuclearDelayBounds();
         console.log(`⚡ NUCLEAR_ACCEPT is ENABLED. Accepts use direct POST with ${minMs}-${maxMs}ms spacing (pipelined).`);
-        if (NUCLEAR_CONFIRM_ACTIONS) {
-            console.log(`⚙️ Nuclear confirm: /actions=${NUCLEAR_CONFIRM_ACTIONS ? 'on' : 'off'}, strict=${NUCLEAR_CONFIRM_STRICT ? 'on' : 'off'}`);
-        }
     } else {
         console.log('🧭 NUCLEAR_ACCEPT is disabled. Using UI click flow.');
     }
