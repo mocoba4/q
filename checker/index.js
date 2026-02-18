@@ -1234,9 +1234,21 @@ async function run() {
         console.log(`\n🚀 [EVENT TRIGGER] Dispatching ${validJobs.length} jobs to swarm IMMEDIATELY...`);
 
         // A. Filter & Dispatch (using Cache)
-        const singleJobs = validJobs.filter(j => !j.isGrouped && j.price >= CONFIG.minPriceSingle).sort((a, b) => b.price - a.price);
-        const groupedJobs = validJobs.filter(j => j.isGrouped && j.pricePerUnit >= CONFIG.minPriceVariation).sort((a, b) => b.price - a.price);
+        const singleJobs = validJobs
+            .filter(j => !j.isGrouped && Number(j.price) >= CONFIG.minPriceSingle)
+            .sort((a, b) => b.price - a.price);
+        const groupedJobs = validJobs
+            .filter(j => j.isGrouped && Number(j.pricePerUnit) >= CONFIG.minPriceVariation)
+            .sort((a, b) => b.price - a.price);
         const jobsToAssign = [...singleJobs, ...groupedJobs];
+
+        // Important: when we have a mixed batch (some jobs pass price filters, some do not),
+        // we must still log the price-rejected jobs. Otherwise it looks like we "missed" them.
+        const eligibleIds = new Set(jobsToAssign.map(j => String(j.id)));
+        const priceRejected = (validJobs || []).filter(j => !eligibleIds.has(String(j.id)));
+        if (priceRejected.length > 0) {
+            priceRejected.forEach(j => sheetsLogger.enqueue(j, 'ignored_low_price'));
+        }
 
         if (jobsToAssign.length === 0) {
             console.log('[Event] No jobs matched price criteria.');
