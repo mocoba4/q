@@ -1268,6 +1268,8 @@ async function run() {
         agents.forEach(a => agentQueues[a.id] = []);
         const currentCapacities = JSON.parse(JSON.stringify(expectedCapacityCache));
 
+        const assignedJobIds = new Set();
+
         for (const job of jobsToAssign) {
             const requiredType = job.isGrouped ? 'grouped' : 'single';
             // Explicitly iterate agents in order (1, 2, 3...) to ensure Greedy Assignment
@@ -1277,7 +1279,15 @@ async function run() {
             if (bestAgent) {
                 agentQueues[bestAgent.id].push(job);
                 currentCapacities[bestAgent.id][requiredType].available--;
+                assignedJobIds.add(String(job.id));
             }
+        }
+
+        // Anything that passes price filters but couldn't be assigned due to capacity
+        // should still be logged to Sheets (otherwise it looks like we "missed" jobs).
+        const unassigned = jobsToAssign.filter(j => !assignedJobIds.has(String(j.id)));
+        if (unassigned.length > 0) {
+            unassigned.forEach(j => sheetsLogger.enqueue(j, 'ignored_capacity'));
         }
 
         const totalJobs = Object.values(agentQueues).flat().length;
