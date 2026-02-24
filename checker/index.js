@@ -309,7 +309,13 @@ function getJobMultiplierFromAttributes(attributes) {
 
 async function getCsrfTokenForAgent(agent) {
     try {
-        if (agent && agent.csrfToken) return agent.csrfToken;
+        // CSRF tokens can rotate; don't cache forever.
+        // Keep a short TTL to reduce meta-tag reads but avoid stale-token 403s.
+        const now = Date.now();
+        const ttlMs = 60 * 1000;
+        if (agent && agent.csrfToken && typeof agent.csrfTokenUpdatedAt === 'number' && (now - agent.csrfTokenUpdatedAt) < ttlMs) {
+            return agent.csrfToken;
+        }
         const page = agent?.page;
         if (!page) return '';
 
@@ -337,7 +343,10 @@ async function getCsrfTokenForAgent(agent) {
             }
         }
 
-        if (token && agent) agent.csrfToken = token;
+        if (token && agent) {
+            agent.csrfToken = token;
+            agent.csrfTokenUpdatedAt = Date.now();
+        }
         return token || '';
     } catch (_) {
         return '';
@@ -391,6 +400,11 @@ async function processJobNuclear(agent, job) {
 
         if (status === 403) {
             console.log(`[Account ${agent.id}] ❌ Nuclear accept FAILED (HTTP 403).`);
+            // CSRF tokens can become stale/invalid; clear cache so next accept refreshes.
+            if (agent) {
+                agent.csrfToken = '';
+                agent.csrfTokenUpdatedAt = 0;
+            }
             return { ok: false, reason: 'forbidden', method: 'nuclear', status };
         }
 
