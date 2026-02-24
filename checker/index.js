@@ -158,6 +158,26 @@ const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
 // Enabled: LOWPOLY_ONLY_MODE=1, Disabled: LOWPOLY_ONLY_MODE=0 (or unset)
 const LOWPOLY_ONLY_MODE = isTruthyEnv(process.env.LOWPOLY_ONLY_MODE || '');
 
+// Optional word filter: ignore jobs if the title contains any of these keywords.
+// Configure as a comma/newline-separated list. Example: "X-mas, Christmas, Mask"
+function parseKeywordList(v) {
+    const raw = String(v ?? '').trim();
+    if (!raw) return [];
+    return raw
+        .split(/[\n,]+/g)
+        .map(s => String(s || '').trim())
+        .filter(Boolean);
+}
+
+const TITLE_FILTER_KEYWORDS = parseKeywordList(process.env.TITLE_FILTER_KEYWORDS);
+
+function titleMatchesKeywordFilter(job) {
+    if (!TITLE_FILTER_KEYWORDS || TITLE_FILTER_KEYWORDS.length === 0) return false;
+    const title = String(job?.title ?? '').toLowerCase();
+    if (!title) return false;
+    return TITLE_FILTER_KEYWORDS.some(w => title.includes(String(w).toLowerCase()));
+}
+
 function isHighPolyJob(job) {
     const tags = job?.tags;
     if (!tags) return false;
@@ -830,6 +850,10 @@ async function run() {
         console.log('🟩 LOWPOLY_ONLY_MODE is ENABLED. High-poly jobs will be ignored and logged as "Ignored: High Poly".');
     }
 
+    if (TITLE_FILTER_KEYWORDS.length > 0) {
+        console.log(`🧹 TITLE_FILTER_KEYWORDS is ENABLED. Ignoring jobs whose title contains any of ${TITLE_FILTER_KEYWORDS.length} keyword(s).`);
+    }
+
     if (CONFIG.checkOnly) {
         console.log('🛡️ SAFETY MODE: "CHECK_ONLY" is ON. Auto-Accept disabled.');
     }
@@ -865,6 +889,7 @@ async function run() {
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_failed` }, 'failed');
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_low_price` }, 'ignored_low_price');
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_high_poly` }, 'ignored_high_poly');
+        sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_word_filter` }, 'ignored_word_filter');
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_capacity` }, 'ignored_capacity');
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_check_only` }, 'check_only');
 
@@ -1183,9 +1208,19 @@ async function run() {
     async function triggerSwarm(validJobs) {
         const effectiveCheckOnly = CONFIG.checkOnly || forcedCheckOnly;
 
+        // Title keyword filter: ignore matching jobs and always log them.
+        // This has priority over lowpoly-only and price filters.
+        let filteredJobs = Array.isArray(validJobs) ? validJobs : [];
+        if (TITLE_FILTER_KEYWORDS.length > 0 && filteredJobs.length > 0) {
+            const keywordMatched = filteredJobs.filter(titleMatchesKeywordFilter);
+            if (keywordMatched.length > 0) {
+                keywordMatched.forEach(j => sheetsLogger.enqueue(j, 'ignored_word_filter'));
+            }
+            filteredJobs = filteredJobs.filter(j => !titleMatchesKeywordFilter(j));
+        }
+
         // Lowpoly-only mode: ignore high-poly jobs and always log them.
         // This must happen before any dispatch/queue logic so we don't silently drop them.
-        let filteredJobs = Array.isArray(validJobs) ? validJobs : [];
         if (LOWPOLY_ONLY_MODE && filteredJobs.length > 0) {
             const highPolyJobs = filteredJobs.filter(isHighPolyJob);
             if (highPolyJobs.length > 0) {

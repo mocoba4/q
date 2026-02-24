@@ -48,6 +48,8 @@ function statusToText(status) {
             return 'Ignored: Low Price';
         case 'ignored_high_poly':
             return 'Ignored: High Poly';
+        case 'ignored_word_filter':
+            return 'Ignored: Word Filter';
         case 'ignored':
         default:
             return 'Job ignored';
@@ -155,10 +157,26 @@ function buildStatusConditionalFormattingRequests(sheetId) {
                 }
             }
         },
-        // Blue = check-only
+        // Light teal = word filter
         {
             addConditionalFormatRule: {
                 index: 6,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Ignored: Word Filter' }] },
+                        format: {
+                            backgroundColor: { red: 0.8, green: 0.95, blue: 0.95 },
+                            textFormat: { foregroundColor: { red: 0.05, green: 0.2, blue: 0.2 } }
+                        }
+                    }
+                }
+            }
+        },
+        // Blue = check-only
+        {
+            addConditionalFormatRule: {
+                index: 7,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -174,7 +192,7 @@ function buildStatusConditionalFormattingRequests(sheetId) {
         // Legacy alias (kept for older rows)
         {
             addConditionalFormatRule: {
-                index: 7,
+                index: 8,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -199,6 +217,7 @@ function buildStatusDropdownValidationRule() {
         'Ignored: Capacity Full',
         'Ignored: Low Price',
         'Ignored: High Poly',
+        'Ignored: Word Filter',
         'Job ignored'
     ];
 
@@ -236,6 +255,7 @@ function createSheetsLogger() {
         { title: 'Failed', statusText: 'Failed to take job' },
         { title: 'Ignored: Low Price', statusText: 'Ignored: Low Price' },
         { title: 'Ignored: High Poly', statusText: 'Ignored: High Poly' },
+        { title: 'Ignored: Word Filter', statusText: 'Ignored: Word Filter' },
         { title: 'Ignored: Capacity Full', statusText: 'Ignored: Capacity Full' },
         { title: 'Check Only', statusText: 'Check Only Mode' }
     ];
@@ -454,6 +474,7 @@ function createSheetsLogger() {
                     ['Ignored: Capacity Full', { red: 1.0, green: 0.85, blue: 0.15 }],
                     ['Ignored: Low Price', { red: 0.45, green: 0.45, blue: 0.45 }],
                     ['Ignored: High Poly', { red: 1.0, green: 0.72, blue: 0.35 }],
+                    ['Ignored: Word Filter', { red: 0.2, green: 0.75, blue: 0.75 }],
                     ['Check Only', { red: 0.2, green: 0.45, blue: 1.0 }]
                 ]);
 
