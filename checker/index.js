@@ -826,6 +826,10 @@ async function run() {
         console.log('🧭 NUCLEAR_ACCEPT is disabled. Using UI click flow.');
     }
 
+    if (LOWPOLY_ONLY_MODE) {
+        console.log('🟩 LOWPOLY_ONLY_MODE is ENABLED. High-poly jobs will be ignored and logged as "Ignored: High Poly".');
+    }
+
     if (CONFIG.checkOnly) {
         console.log('🛡️ SAFETY MODE: "CHECK_ONLY" is ON. Auto-Accept disabled.');
     }
