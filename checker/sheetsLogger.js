@@ -46,6 +46,8 @@ function statusToText(status) {
             return 'Ignored: Capacity Full';
         case 'ignored_low_price':
             return 'Ignored: Low Price';
+        case 'ignored_high_poly':
+            return 'Ignored: High Poly';
         case 'ignored':
         default:
             return 'Job ignored';
@@ -137,10 +139,26 @@ function buildStatusConditionalFormattingRequests(sheetId) {
                 }
             }
         },
-        // Blue = check-only
+        // Orange/peach = high poly (lowpoly-only mode)
         {
             addConditionalFormatRule: {
                 index: 5,
+                rule: {
+                    ranges: [statusRange],
+                    booleanRule: {
+                        condition: { type: 'TEXT_EQ', values: [{ userEnteredValue: 'Ignored: High Poly' }] },
+                        format: {
+                            backgroundColor: { red: 1.0, green: 0.88, blue: 0.75 },
+                            textFormat: { foregroundColor: { red: 0.1, green: 0.1, blue: 0.1 } }
+                        }
+                    }
+                }
+            }
+        },
+        // Blue = check-only
+        {
+            addConditionalFormatRule: {
+                index: 6,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -156,7 +174,7 @@ function buildStatusConditionalFormattingRequests(sheetId) {
         // Legacy alias (kept for older rows)
         {
             addConditionalFormatRule: {
-                index: 6,
+                index: 7,
                 rule: {
                     ranges: [statusRange],
                     booleanRule: {
@@ -180,6 +198,7 @@ function buildStatusDropdownValidationRule() {
         'Check Only Mode',
         'Ignored: Capacity Full',
         'Ignored: Low Price',
+        'Ignored: High Poly',
         'Job ignored'
     ];
 
@@ -216,6 +235,7 @@ function createSheetsLogger() {
         { title: 'Accepted', statusText: 'Job taken' },
         { title: 'Failed', statusText: 'Failed to take job' },
         { title: 'Ignored: Low Price', statusText: 'Ignored: Low Price' },
+        { title: 'Ignored: High Poly', statusText: 'Ignored: High Poly' },
         { title: 'Ignored: Capacity Full', statusText: 'Ignored: Capacity Full' },
         { title: 'Check Only', statusText: 'Check Only Mode' }
     ];
@@ -433,6 +453,7 @@ function createSheetsLogger() {
                     ['Failed', { red: 1.0, green: 0.05, blue: 0.05 }],
                     ['Ignored: Capacity Full', { red: 1.0, green: 0.85, blue: 0.15 }],
                     ['Ignored: Low Price', { red: 0.45, green: 0.45, blue: 0.45 }],
+                    ['Ignored: High Poly', { red: 1.0, green: 0.72, blue: 0.35 }],
                     ['Check Only', { red: 0.2, green: 0.45, blue: 1.0 }]
                 ]);
 

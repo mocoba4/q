@@ -154,6 +154,19 @@ const parseCapacity = (str) => {
 const isTruthyEnv = (v) => /^(1|true|on|yes)$/i.test(String(v || '').trim());
 const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
 
+// When enabled, we ignore jobs tagged as "high-poly" / "high poly".
+// Enabled: LOWPOLY_ONLY_MODE=1, Disabled: LOWPOLY_ONLY_MODE=0 (or unset)
+const LOWPOLY_ONLY_MODE = isTruthyEnv(process.env.LOWPOLY_ONLY_MODE || '');
+
+function isHighPolyJob(job) {
+    const tags = job?.tags;
+    if (!tags) return false;
+
+    const tagList = Array.isArray(tags) ? tags : [tags];
+    const combined = tagList.map(t => String(t || '')).join(' ');
+    return /\bhigh[\s-]?poly\b/i.test(combined);
+}
+
 // Global per-account caps: limit how many tasks of each type we are willing to hold,
 // regardless of the UI's max capacity. Example: if UI shows 6/12 and MAX_TAKE_GROUPED=8,
 // we will accept at most 2 more grouped tasks (to reach 8/12).
@@ -847,6 +860,7 @@ async function run() {
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_taken` }, 'taken');
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_failed` }, 'failed');
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_low_price` }, 'ignored_low_price');
+        sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_high_poly` }, 'ignored_high_poly');
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_capacity` }, 'ignored_capacity');
         sheetsLogger.enqueue({ ...dummyBase, id: `${dummyBase.id}_check_only` }, 'check_only');
 
@@ -1165,14 +1179,25 @@ async function run() {
     async function triggerSwarm(validJobs) {
         const effectiveCheckOnly = CONFIG.checkOnly || forcedCheckOnly;
 
+        // Lowpoly-only mode: ignore high-poly jobs and always log them.
+        // This must happen before any dispatch/queue logic so we don't silently drop them.
+        let filteredJobs = Array.isArray(validJobs) ? validJobs : [];
+        if (LOWPOLY_ONLY_MODE && filteredJobs.length > 0) {
+            const highPolyJobs = filteredJobs.filter(isHighPolyJob);
+            if (highPolyJobs.length > 0) {
+                highPolyJobs.forEach(j => sheetsLogger.enqueue(j, 'ignored_high_poly'));
+            }
+            filteredJobs = filteredJobs.filter(j => !isHighPolyJob(j));
+        }
+
         if (effectiveCheckOnly) {
             // In check-only, we do not attempt accepts, but we still log + alert.
             if (isDispatching) {
-                (validJobs || []).forEach(j => sheetsLogger.enqueue(j, 'check_only'));
+            (filteredJobs || []).forEach(j => sheetsLogger.enqueue(j, 'check_only'));
 
                 fireAndForgetSpotterAlert({
-                    telegramMsg: `🛡️ Check Only Mode active. Logged ${validJobs.length} jobs (dispatch in progress).`,
-                    ntfyMsg: `Check-only: logged ${validJobs.length} jobs during dispatch`,
+                    telegramMsg: `🛡️ Check Only Mode active. Logged ${filteredJobs.length} jobs (dispatch in progress).`,
+                    ntfyMsg: `Check-only: logged ${filteredJobs.length} jobs during dispatch`,
                     cooldownMs: DISPATCH_QUEUE_ALERT_COOLDOWN_MS,
                     getLastAt: () => lastQueuedAlertAt,
                     setLastAt: v => { lastQueuedAlertAt = v; }
@@ -1182,9 +1207,9 @@ async function run() {
             }
 
             isDispatching = true;
-            console.log(`\n🛡️ [EVENT TRIGGER] Check Only Mode. Logging ${validJobs.length} jobs (no accepts).`);
+            console.log(`\n🛡️ [EVENT TRIGGER] Check Only Mode. Logging ${filteredJobs.length} jobs (no accepts).`);
 
-            (validJobs || []).forEach(j => sheetsLogger.enqueue(j, 'check_only'));
+            (filteredJobs || []).forEach(j => sheetsLogger.enqueue(j, 'check_only'));
 
             try {
                 const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
@@ -1198,13 +1223,18 @@ async function run() {
             return;
         }
 
+        // If we filtered out everything (e.g. lowpoly-only and all were high-poly), we're done.
+        if (!filteredJobs || filteredJobs.length === 0) {
+            return;
+        }
+
         if (isDispatching) {
             // Do not drop detections during an active dispatch.
-            enqueuePendingJobs(validJobs);
+            enqueuePendingJobs(filteredJobs);
 
             // Policy: Only log Detected (Queued) the FIRST time we ever see this job ID in this run.
             // This prevents the Jobs view from regressing a later status back to Detected (Queued).
-            (validJobs || []).forEach(j => {
+            (filteredJobs || []).forEach(j => {
                 const id = j?.id;
                 if (id === undefined || id === null) return;
                 const key = String(id);
@@ -1214,8 +1244,8 @@ async function run() {
             });
 
             fireAndForgetSpotterAlert({
-                telegramMsg: `📥 Jobs detected while swarm is dispatching. Queued ${validJobs.length} jobs for next pass.`,
-                ntfyMsg: `Queued ${validJobs.length} jobs during dispatch`,
+                telegramMsg: `📥 Jobs detected while swarm is dispatching. Queued ${filteredJobs.length} jobs for next pass.`,
+                ntfyMsg: `Queued ${filteredJobs.length} jobs during dispatch`,
                 cooldownMs: DISPATCH_QUEUE_ALERT_COOLDOWN_MS,
                 getLastAt: () => lastQueuedAlertAt,
                 setLastAt: v => { lastQueuedAlertAt = v; }
@@ -1225,19 +1255,19 @@ async function run() {
         }
 
         // Mark these job IDs as seen for this run (so later dispatch-time detections won't re-log detected_queued).
-        (validJobs || []).forEach(j => {
+        (filteredJobs || []).forEach(j => {
             const id = j?.id;
             if (id === undefined || id === null) return;
             seenJobIdsThisRun.add(String(id));
         });
         isDispatching = true;
-        console.log(`\n🚀 [EVENT TRIGGER] Dispatching ${validJobs.length} jobs to swarm IMMEDIATELY...`);
+        console.log(`\n🚀 [EVENT TRIGGER] Dispatching ${filteredJobs.length} jobs to swarm IMMEDIATELY...`);
 
         // A. Filter & Dispatch (using Cache)
-        const singleJobs = validJobs
+        const singleJobs = filteredJobs
             .filter(j => !j.isGrouped && Number(j.price) >= CONFIG.minPriceSingle)
             .sort((a, b) => b.price - a.price);
-        const groupedJobs = validJobs
+        const groupedJobs = filteredJobs
             .filter(j => j.isGrouped && Number(j.pricePerUnit) >= CONFIG.minPriceVariation)
             .sort((a, b) => b.price - a.price);
         const jobsToAssign = [...singleJobs, ...groupedJobs];
@@ -1245,7 +1275,7 @@ async function run() {
         // Important: when we have a mixed batch (some jobs pass price filters, some do not),
         // we must still log the price-rejected jobs. Otherwise it looks like we "missed" them.
         const eligibleIds = new Set(jobsToAssign.map(j => String(j.id)));
-        const priceRejected = (validJobs || []).filter(j => !eligibleIds.has(String(j.id)));
+        const priceRejected = (filteredJobs || []).filter(j => !eligibleIds.has(String(j.id)));
         if (priceRejected.length > 0) {
             priceRejected.forEach(j => sheetsLogger.enqueue(j, 'ignored_low_price'));
         }
@@ -1254,16 +1284,16 @@ async function run() {
             console.log('[Event] No jobs matched price criteria.');
 
             // Log all detected jobs as ignored (too cheap) without slowing down.
-            validJobs.forEach(j => sheetsLogger.enqueue(j, 'ignored_low_price'));
+            filteredJobs.forEach(j => sheetsLogger.enqueue(j, 'ignored_low_price'));
 
             // CHEAP JOB WARNING
             // If we have valid jobs but filtered them all out, warn the user
-            if (validJobs.length > 0) {
+            if (filteredJobs.length > 0) {
                 console.log('⚠️ [Event] Jobs ignored due to low price. Sending warning...');
                 try {
                     const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
                     // Fire and forget
-                    const ignoredPrices = validJobs.map(j => `$${j.price}`).join(', ');
+                    const ignoredPrices = filteredJobs.map(j => `$${j.price}`).join(', ');
                     sendDualAlert(`⚠️ Jobs Ignored (Too Cheap): ${ignoredPrices}`, `Jobs Ignored: ${ignoredPrices}`, screenshotBuffer)
                         .catch(e => console.error('Cheap Job Alert Failed:', e.message));
                 } catch (e) {

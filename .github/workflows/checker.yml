@@ -57,6 +57,7 @@ jobs:
         NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         MIN_PRICE_SINGLE: ${{ secrets.MIN_PRICE_SINGLE }}
         MIN_PRICE_VARIATION: ${{ secrets.MIN_PRICE_VARIATION }}
+        LOWPOLY_ONLY_MODE: ${{ secrets.LOWPOLY_ONLY_MODE }}
         CHECK_ONLY: ${{ secrets.CHECK_ONLY }}
         ACCOUNT_COUNT: ${{ secrets.ACCOUNT_COUNT }}
         CG_EMAIL2: ${{ secrets.CG_EMAIL2 }}
