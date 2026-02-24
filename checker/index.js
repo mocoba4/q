@@ -854,8 +854,7 @@ async function run() {
     else console.log('💻 Mode: Local - Single Run');
 
     if (NUCLEAR_ACCEPT_ENABLED) {
-        const { minMs, maxMs } = getNuclearDelayBounds();
-        console.log(`⚡ NUCLEAR_ACCEPT is ENABLED. Accepts use direct POST with ${minMs}-${maxMs}ms spacing (pipelined).`);
+        console.log('⚡ NUCLEAR_ACCEPT is ENABLED. Accepts use direct POST (async; no spacing).');
     } else {
         console.log('🧭 NUCLEAR_ACCEPT is disabled. Using UI click flow.');
     }
@@ -1401,8 +1400,7 @@ async function run() {
                     .map(j => ({ job: j, agent: jobToAgent.get(String(j.id)) }))
                     .filter(x => x.agent);
 
-                const { minMs, maxMs } = getNuclearDelayBounds();
-                console.log(`⚡ Nuclear mode: processing ${orderedPlan.length} jobs sequentially (${minMs}-${maxMs}ms spacing).`);
+                console.log(`⚡ Nuclear mode: processing ${orderedPlan.length} jobs asynchronously (no spacing).`);
 
                 // Pipeline nuclear accepts:
                 // - Dispatch accept POSTs spaced by getNuclearDelayMs()
@@ -1439,8 +1437,6 @@ async function run() {
                             return { agent, job, requiredType, res };
                         })()
                     );
-
-                    await sleep(getNuclearDelayMs());
                 }
 
                 const done = await Promise.all(inFlight);
