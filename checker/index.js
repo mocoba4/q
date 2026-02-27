@@ -41,30 +41,19 @@ if (ACTIVE_ACCOUNTS.length === 0) {
 }
 
 
-async function sendTelegramAlert(message, imageBuffer) {
+async function sendTelegramAlert(message, _imageBuffer) {
     if (!CONFIG.telegramToken || !CONFIG.telegramChatId) {
         console.error('Missing Telegram configuration');
         return;
     }
 
     try {
-        if (imageBuffer) {
-            const form = new FormData();
-            form.append('chat_id', CONFIG.telegramChatId);
-            form.append('caption', message);
-            form.append('photo', imageBuffer, 'screenshot.png');
-
-            await axios.post(`https://api.telegram.org/bot${CONFIG.telegramToken}/sendPhoto`, form, {
-                headers: form.getHeaders()
-            });
-            console.log('Telegram photo sent.');
-        } else {
-            await axios.post(`https://api.telegram.org/bot${CONFIG.telegramToken}/sendMessage`, {
-                chat_id: CONFIG.telegramChatId,
-                text: message
-            });
-            console.log('Telegram text sent.');
-        }
+        // Text-only notifications (no screenshots).
+        await axios.post(`https://api.telegram.org/bot${CONFIG.telegramToken}/sendMessage`, {
+            chat_id: CONFIG.telegramChatId,
+            text: message
+        });
+        console.log('Telegram text sent.');
     } catch (error) {
         console.error('Failed to send Telegram alert:', error.message);
     }
@@ -91,7 +80,7 @@ async function sendTelegramDocument({ caption, filename, buffer }) {
     }
 }
 
-async function sendNtfyAlert(message, imageBuffer) {
+async function sendNtfyAlert(message, _imageBuffer) {
     if (!CONFIG.ntfyTopic) {
         console.log('No NTFY_TOPIC configured, skipping push notification.');
         return;
@@ -103,21 +92,13 @@ async function sendNtfyAlert(message, imageBuffer) {
         'Priority': '5',
         'Tags': 'warning,rocket'
     };
-    if (imageBuffer) {
-        headers['Filename'] = 'screenshot.png';
-        headers['Header'] = 'X-Message';
-    }
 
     const MAX_RETRIES = 3;
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         try {
-            if (imageBuffer) {
-                await axios.put(url, imageBuffer, { headers, timeout: 10000 }); // 10s timeout
-                console.log('ntfy screenshot sent.');
-            } else {
-                await axios.post(url, message, { headers, timeout: 10000 });
-                console.log('ntfy text sent.');
-            }
+            // Text-only notifications (no screenshots).
+            await axios.post(url, message, { headers, timeout: 10000 });
+            console.log('ntfy text sent.');
             return; // Success, exit
         } catch (error) {
             console.error(`ntfy alert failed (Attempt ${attempt}/${MAX_RETRIES}): ${error.message}`);
