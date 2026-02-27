@@ -677,16 +677,9 @@ async function processJob(agent, job) {
                 const rawPrice = String(job?.price ?? '').split('').join(' ');
                 const title = (job?.title ? `\nTitle: ${job.title}` : '');
 
-                let screenshot;
-                try {
-                    screenshot = await page.screenshot({ fullPage: true });
-                } catch (_) {
-                    screenshot = undefined;
-                }
-
                 const msg = `❌ Account ${agent.id} FAILED to take job\nReason: ${reason}${title}\nPrice: $${job?.price}\nType: ${job?.isGrouped ? 'Grouped' : 'Single'}\nURL: ${displayUrl}\n(Price raw: [ ${rawPrice} ])`;
                 // Fire-and-forget so failures don't stall the swarm.
-                sendDualAlert(msg, `Job take failed: ${reason}`, screenshot)
+                sendDualAlert(msg, `Job take failed: ${reason}`)
                     .catch(err => console.error(`Background Failure Notification Failed: ${err.message}`));
 
                 // Optional: Send redacted XHR/fetch trace to Telegram for building a future direct-API flow.
@@ -800,11 +793,10 @@ async function processJob(agent, job) {
                 const endUrl = page.url();
                 const isForbidden = endUrl.includes('forbidden=true');
                 if (!isForbidden) {
-                    const screenshot = await page.screenshot({ fullPage: true });
                     const rawPrice = String(job.price).split('').join(' ');
                     const msg = `✅ Account ${agent.id} SECURED Job!\nPrice: $${job.price}\nType: ${job.isGrouped ? 'Grouped' : 'Single'}`;
                     console.log(`[Account ${agent.id}] SUCCESS! Price: [ ${rawPrice} ]`);
-                    sendDualAlert(msg, `Job Secured ($${job.price})`, screenshot)
+                    sendDualAlert(msg, `Job Secured ($${job.price})`)
                         .catch(err => console.error(`Background Notification Failed: ${err.message}`));
 
                     // Optional: capture the successful accept/confirm request sequence.
@@ -921,6 +913,10 @@ async function run() {
     const agents = [];
     sheetsLogger.start();
 
+    // Cache the exact API URL used by the site for available requests.
+    // We'll seed this from normal page traffic on startup, then poll it directly.
+    const availableRequestsUrlByAgentId = {};
+
     // --- INIT SWARM ---
     for (const acc of effectiveAccounts) {
         console.log(`Initializing Account ${acc.id} (${acc.email})...`);
@@ -939,42 +935,45 @@ async function run() {
         const page = await context.newPage();
 
         // OPTION 2 PREP: JSON Logger (The Sniper Spy) 🕵️‍♂️
-        if (acc.id === 1) {
-            page.on('response', async response => {
-                try {
-                    // OPTIMIZED SPY: Only log main jobs list, skip product detail noise
-                    if (response.url().includes('available-requests') && response.status() === 200) {
-                        const body = await response.text();
-                        if (body.includes('"uid"') || body.includes('"price"') || body.includes('"id"')) {
-                            console.log('\n🔍 --- SNIPER DATA CAPTURED (SAFE MODE) ---');
-                            // Safe Log: Parse and log critical fields with spacing to bypass masking
-                            try {
-                                const data = JSON.parse(body);
-                                const jobs = data.data || [];
-                                jobs.forEach(j => {
-                                    const attrs = j.attributes || {};
-                                    const safeId = String(j.id).split('').join(' ');
-                                    const safeTitle = String(attrs.title).split('').join(' ');
-                                    const isGrouped = attrs.partOfGroupOfRequests === true;
-                                    const groupedPrice = attrs.groupData?.pricingInformation?.price;
-                                    const itemPrice = attrs.pricingInformation?.price;
-                                    const priceForLog = (isGrouped ? (groupedPrice ?? itemPrice) : itemPrice) ?? attrs.compensation;
-                                    const safePrice = String(priceForLog).split('').join(' ');
+        // Seed the exact available-requests URL from real page traffic (for direct polling).
+        page.on('response', async response => {
+            try {
+                if (response.url().includes('available-requests') && response.status() === 200) {
+                    availableRequestsUrlByAgentId[acc.id] = response.url();
 
-                                    console.log(`[Job] ID: ${safeId}`);
-                                    console.log(`      Title: ${safeTitle}`);
-                                    console.log(`      Price: ${safePrice}`);
-                                    console.log('--------------------------------------------------');
-                                });
-                            } catch (e) {
-                                console.log('[SafeLog Error] Could not parse JSON body.');
-                            }
-                            console.log('------------------------------\n');
+                    // Safe-mode logging only for the primary spotter (Account 1).
+                    if (acc.id !== 1) return;
+
+                    const body = await response.text();
+                    if (body.includes('"uid"') || body.includes('"price"') || body.includes('"id"')) {
+                        console.log('\n🔍 --- SNIPER DATA CAPTURED (SAFE MODE) ---');
+                        // Safe Log: Parse and log critical fields with spacing to bypass masking
+                        try {
+                            const data = JSON.parse(body);
+                            const jobs = data.data || [];
+                            jobs.forEach(j => {
+                                const attrs = j.attributes || {};
+                                const safeId = String(j.id).split('').join(' ');
+                                const safeTitle = String(attrs.title).split('').join(' ');
+                                const isGrouped = attrs.partOfGroupOfRequests === true;
+                                const groupedPrice = attrs.groupData?.pricingInformation?.price;
+                                const itemPrice = attrs.pricingInformation?.price;
+                                const priceForLog = (isGrouped ? (groupedPrice ?? itemPrice) : itemPrice) ?? attrs.compensation;
+                                const safePrice = String(priceForLog).split('').join(' ');
+
+                                console.log(`[Job] ID: ${safeId}`);
+                                console.log(`      Title: ${safeTitle}`);
+                                console.log(`      Price: ${safePrice}`);
+                                console.log('--------------------------------------------------');
+                            });
+                        } catch (e) {
+                            console.log('[SafeLog Error] Could not parse JSON body.');
                         }
+                        console.log('------------------------------\n');
                     }
-                } catch (e) { /* ignore spy errors */ }
-            });
-        }
+                }
+            } catch (e) { /* ignore spy errors */ }
+        });
 
         // Login Flow
         await page.goto(CONFIG.url, { waitUntil: 'networkidle' });
@@ -1191,16 +1190,8 @@ async function run() {
 
         void (async () => {
             try {
-                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                await sendDualAlert(telegramMsg, ntfyMsg, screenshotBuffer);
-            } catch (e) {
-                // Best-effort: If screenshot fails, still send a text alert.
-                try {
-                    await sendDualAlert(telegramMsg, ntfyMsg);
-                } catch (_) {
-                    // ignore
-                }
-            }
+                await sendDualAlert(telegramMsg, ntfyMsg);
+            } catch (_) { /* ignore */ }
         })().catch(() => {});
     }
 
@@ -1263,12 +1254,7 @@ async function run() {
 
             (filteredJobs || []).forEach(j => sheetsLogger.enqueue(j, 'check_only'));
 
-            try {
-                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`, screenshotBuffer);
-            } catch (e) {
-                await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`);
-            }
+            await sendDualAlert(`🚨 [Event] Jobs Detected (Check Only)`, `Tasks available! (Auto-Accept Disabled)`);
 
             isDispatching = false;
             drainPendingJobsSoon();
@@ -1342,15 +1328,10 @@ async function run() {
             // If we have valid jobs but filtered them all out, warn the user
             if (filteredJobs.length > 0) {
                 console.log('⚠️ [Event] Jobs ignored due to low price. Sending warning...');
-                try {
-                    const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                    // Fire and forget
-                    const ignoredPrices = filteredJobs.map(j => `$${j.price}`).join(', ');
-                    sendDualAlert(`⚠️ Jobs Ignored (Too Cheap): ${ignoredPrices}`, `Jobs Ignored: ${ignoredPrices}`, screenshotBuffer)
-                        .catch(e => console.error('Cheap Job Alert Failed:', e.message));
-                } catch (e) {
-                    console.error('Failed to capture cheap job screenshot:', e.message);
-                }
+                // Fire and forget (text only)
+                const ignoredPrices = filteredJobs.map(j => `$${j.price}`).join(', ');
+                sendDualAlert(`⚠️ Jobs Ignored (Too Cheap): ${ignoredPrices}`, `Jobs Ignored: ${ignoredPrices}`)
+                    .catch(e => console.error('Cheap Job Alert Failed:', e.message));
             }
 
             isDispatching = false;
@@ -1484,10 +1465,8 @@ async function run() {
                     await Agent1.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
                 }
 
-                // Always take a screenshot of the swarm event for the user's peace of mind
-                // This happens in parallel with workers, so it doesn't slow them down.
-                const screenshotBuffer = await Agent1.page.screenshot({ fullPage: true });
-                sendDualAlert(`🎯 Swarm Complete!`, `Processing complete.`, screenshotBuffer).catch(e => console.error('BG Alert Error:', e.message));
+                // Text-only completion alert.
+                sendDualAlert(`🎯 Swarm Complete!`, `Processing complete.`).catch(e => console.error('BG Alert Error:', e.message));
 
                 const deferCapacityScan = Boolean(NUCLEAR_ACCEPT_ENABLED && burstActive);
                 if (deferCapacityScan) {
@@ -1536,100 +1515,124 @@ async function run() {
     // Sniper Storage
     let lastSniperJobs = [];
 
-    // --- SNIPER ENGINE (Option 2) ---
-    // Listen to the network to catch jobs BEFORE the browser even finishes drawing them.
-    // Dual-spotter mode: attach to Account 1 and Account 2 to reduce missed jobs between reloads.
-    const attachSniperToSpotter = (spotterAgent) => {
-        if (!spotterAgent || !spotterAgent.page) return;
+    // Send a lightweight text alert when jobs are discovered (no screenshots).
+    const DISCOVERY_ALERT_COOLDOWN_MS = Math.max(0, parseInt(process.env.DISCOVERY_ALERT_COOLDOWN_MS || '15000', 10) || 15000);
+    let lastDiscoveryAlertAt = 0;
+    function maybeAlertJobsDiscovered({ spotterId, jobs }) {
+        const now = Date.now();
+        if (DISCOVERY_ALERT_COOLDOWN_MS > 0 && now - lastDiscoveryAlertAt < DISCOVERY_ALERT_COOLDOWN_MS) return;
+        lastDiscoveryAlertAt = now;
 
-        spotterAgent.page.on('response', async response => {
-            const url = response.url();
-            if (url.includes('available-requests') && response.status() === 200) {
-                try {
-                    const json = await response.json();
-                    const rawJobs = json.data || [];
+        const count = (jobs || []).length;
+        if (count <= 0) return;
+        const prices = jobs
+            .slice(0, 10)
+            .map(j => `$${j?.price}`)
+            .join(', ');
+        const msg = `🎯 Jobs detected (${count}) by Account ${spotterId}${prices ? `\nPrices: ${prices}` : ''}`;
+        sendDualAlert(msg, msg).catch(() => {});
+    }
 
-                    const parsed = rawJobs.map(item => {
-                        const attr = item.attributes || {};
-                        const isGrouped = attr.partOfGroupOfRequests === true;
+    function parseJobsFromAvailableRequests({ json, spotterAgent }) {
+        const rawJobs = json?.data || [];
+        const parsed = rawJobs.map(item => {
+            const attr = item.attributes || {};
+            const isGrouped = attr.partOfGroupOfRequests === true;
 
-                        const jobUrl = `${CONFIG.url}/${item.id}/brief`;
-                        const price = getJobPriceFromAttributes(attr);
-                        const originalPrice = getJobOriginalPriceFromAttributes(attr);
-                        const multiplier = getJobMultiplierFromAttributes(attr);
-                        const complexity = (attr.complexity ?? attr.groupData?.complexity) ?? '';
-                        const title = attr.title ?? '';
-                        const groupType = attr.groupType ?? '';
-                        const tags = Array.isArray(attr.tags) ? attr.tags : [];
-                        const uid = attr.uid ?? '';
-                        const nextRoundDeadline = attr.nextRoundDeadline ?? '';
+            const jobUrl = `${CONFIG.url}/${item.id}/brief`;
+            const price = getJobPriceFromAttributes(attr);
+            const originalPrice = getJobOriginalPriceFromAttributes(attr);
+            const multiplier = getJobMultiplierFromAttributes(attr);
+            const complexity = (attr.complexity ?? attr.groupData?.complexity) ?? '';
+            const title = attr.title ?? '';
+            const groupType = attr.groupType ?? '';
+            const tags = Array.isArray(attr.tags) ? attr.tags : [];
+            const uid = attr.uid ?? '';
+            const nextRoundDeadline = attr.nextRoundDeadline ?? '';
 
-                        // Unmasked pricing in logs for Sniper verification
-                        const rawPriceLog = String(price).split('').join(' ');
-                        console.log(`[Sniper A${spotterAgent.id}] Detected Job ${item.id} | Price: [ ${rawPriceLog} ]`);
+            // Unmasked pricing in logs for verification
+            const rawPriceLog = String(price).split('').join(' ');
+            console.log(`[Sniper A${spotterAgent.id}] Detected Job ${item.id} | Price: [ ${rawPriceLog} ]`);
 
-                        const variations = isGrouped ? (attr.groupData?.size || 1) : 1;
-
-                        return {
-                            id: item.id,
-                            url: jobUrl,
-                            uid,
-                            nextRoundDeadline,
-                            roundDeadline: nextRoundDeadline,
-                            price: price,
-                            finalPrice: price,
-                            originalPrice,
-                            multiplier,
-                            complexity,
-                            title,
-                            groupType,
-                            tags,
-                            isGrouped: isGrouped,
-                            variations,
-                            pricePerUnit: isGrouped ? (price / variations) : price
-                        };
-                    });
-
-                    lastSniperJobs = parsed;
-                    if (parsed.length > 0) {
-                        console.log(`[Sniper A${spotterAgent.id}] 🎯 Captured ${parsed.length} jobs via API.`);
-
-                        // Enter/extend burst mode whenever we see jobs.
-                        // This is the trigger to start 1s refresh cadence.
-                        enterBurstMode(`jobs_detected_by_A${spotterAgent.id}`);
-                    }
-
-                    // Flood guard: if too many jobs appear at once, switch to check-only for the rest of this run.
-                    if (!forcedCheckOnly && MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY > 0 && parsed.length > MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY) {
-                        forcedCheckOnly = true;
-                        pendingJobsById.clear();
-                        console.error(`\n🚨 [Flood Guard] Detected ${parsed.length} jobs in a single check (> ${MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY}). Switching to CHECK ONLY for the rest of the run.`);
-
-                        fireAndForgetSpotterAlert({
-                            telegramMsg: `🚨 Flood Guard: ${parsed.length} jobs detected at once. Switching to CHECK ONLY (no auto-accept) for the rest of the run.`,
-                            ntfyMsg: `Flood Guard: ${parsed.length} jobs → check-only for rest of run`,
-                            cooldownMs: 0,
-                            getLastAt: () => 0,
-                            setLastAt: () => {}
-                        });
-                    }
-
-                    // Always allow re-triggering accepts; Sheets logging has its own dedupe.
-                    if (parsed.length > 0) {
-                        triggerSwarm(parsed).catch(err => console.error('Swarm Trigger Error:', err.message));
-                    }
-                } catch (e) {
-                    // Ignore parse errors if body is not JSON or empty
-                }
-            } else if (url.includes('available-requests') && (response.status() === 403 || response.status() === 429)) {
-                console.error(`\n🚨 [Sniper Alert] POTENTIAL SOFT BAN detected (HTTP ${response.status()}) on Account ${spotterAgent.id}.`);
-                console.error('The server is blocking our check requests. Recommend stopping or increasing wait time.\n');
-            }
+            const variations = isGrouped ? (attr.groupData?.size || 1) : 1;
+            return {
+                id: item.id,
+                url: jobUrl,
+                uid,
+                nextRoundDeadline,
+                roundDeadline: nextRoundDeadline,
+                price: price,
+                finalPrice: price,
+                originalPrice,
+                multiplier,
+                complexity,
+                title,
+                groupType,
+                tags,
+                isGrouped: isGrouped,
+                variations,
+                pricePerUnit: isGrouped ? (price / variations) : price
+            };
         });
-    };
 
-    attachSniperToSpotter(Agent1);
-    if (!CONFIG.checkOnly && Agent2) attachSniperToSpotter(Agent2);
+        return parsed;
+    }
+
+    async function waitForAvailableRequestsUrl(agent, timeoutMs) {
+        const start = Date.now();
+        while (Date.now() - start < Math.max(0, timeoutMs || 0)) {
+            const u = availableRequestsUrlByAgentId[agent.id];
+            if (u) return u;
+            try { await agent.page.waitForTimeout(100); } catch (_) { /* ignore */ }
+        }
+        return availableRequestsUrlByAgentId[agent.id] || '';
+    }
+
+    async function pollAvailableRequests(agent) {
+        // Try to use a cached URL (captured from the real page traffic).
+        let apiUrl = availableRequestsUrlByAgentId[agent.id];
+        if (!apiUrl) {
+            // Best effort: wait briefly for the initial page load to fire the API call.
+            apiUrl = await waitForAvailableRequestsUrl(agent, 4000);
+        }
+        if (!apiUrl) {
+            // If this agent hasn't seen the URL yet, fall back to any cached URL (endpoints are typically identical).
+            apiUrl = Object.values(availableRequestsUrlByAgentId).find(Boolean) || '';
+        }
+        if (!apiUrl) {
+            console.log(`[Sniper A${agent.id}] No available-requests URL cached yet; skipping poll.`);
+            return [];
+        }
+
+        try {
+            const resp = await agent.context.request.get(apiUrl, {
+                headers: {
+                    'accept': 'application/json, text/plain, */*'
+                }
+            });
+            if (resp.status() !== 200) {
+                if (resp.status() === 403 || resp.status() === 429) {
+                    console.error(`\n🚨 [Sniper Alert] POTENTIAL SOFT BAN detected (HTTP ${resp.status()}) on Account ${agent.id}.`);
+                    console.error('The server is blocking our check requests. Recommend stopping or increasing wait time.\n');
+                }
+                return [];
+            }
+
+            const json = await resp.json();
+            const parsed = parseJobsFromAvailableRequests({ json, spotterAgent: agent });
+            if (parsed.length > 0) {
+                console.log(`[Sniper A${agent.id}] 🎯 Captured ${parsed.length} jobs via API (direct poll).`);
+            }
+            return parsed;
+        } catch (e) {
+            console.error(`[Sniper A${agent.id}] Direct poll failed: ${e.message}`);
+            return [];
+        }
+    }
+
+    // --- DIRECT API POLLING ---
+    // We now poll the available-requests endpoint directly to reduce latency variance.
+    // We still seed the exact URL from the real page responses, but do not rely on page reloads.
 
     try {
         while (keepRunning) {
@@ -1659,56 +1662,43 @@ async function run() {
                     : Math.max(500, Math.floor(baseCycleMs / spotters.length));
 
                 let activeSpotter;
-                if (burstActive && spotters.length > 1) {
-                    const age = Math.max(0, Date.now() - (burstEnteredAt || Date.now()));
-                    const slot = Math.floor(age / BURST_SPOTTER_SLICE_MS) % spotters.length;
-                    activeSpotter = spotters[slot];
-                    if (lastBurstSpotterId !== activeSpotter.id) {
-                        lastBurstSpotterId = activeSpotter.id;
-                        console.log(`🟠 Burst spotter rotation: using Account ${activeSpotter.id} for next ${Math.round(BURST_SPOTTER_SLICE_MS / 1000)}s.`);
-                    }
-                } else {
-                    activeSpotter = spotters[(iterations - 1) % spotters.length];
+                // Spec: in burst mode, alternate spotters each 1s tick (A1, A2, A1, A2...)
+                activeSpotter = spotters[(iterations - 1) % spotters.length];
+
+                // 1) Poll the API directly (fast). No page reload.
+                const parsed = await pollAvailableRequests(activeSpotter);
+                lastSniperJobs = parsed;
+
+                if (parsed.length > 0) {
+                    // Enter/extend burst mode whenever we see jobs.
+                    enterBurstMode(`jobs_detected_by_A${activeSpotter.id}`);
+
+                    // Alert user (text only) that jobs were discovered.
+                    maybeAlertJobsDiscovered({ spotterId: activeSpotter.id, jobs: parsed });
                 }
 
-                // 1. Refresh active Spotter
-                if (activeSpotter.page.url().includes(CONFIG.url)) {
-                    console.log(`[Agent ${activeSpotter.id}] Reloading page...`);
-                    await activeSpotter.page.reload({ waitUntil: 'networkidle' });
-                } else {
-                    console.log(`[Agent ${activeSpotter.id}] Navigating to target...`);
-                    await activeSpotter.page.goto(CONFIG.url, { waitUntil: 'networkidle' });
+                // Flood guard: if too many jobs appear at once, switch to check-only for the rest of this run.
+                if (!forcedCheckOnly && MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY > 0 && parsed.length > MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY) {
+                    forcedCheckOnly = true;
+                    pendingJobsById.clear();
+                    console.error(`\n🚨 [Flood Guard] Detected ${parsed.length} jobs in a single check (> ${MAX_JOBS_PER_CHECK_BEFORE_CHECK_ONLY}). Switching to CHECK ONLY for the rest of the run.`);
+
+                    // Text-only alert
+                    sendDualAlert(
+                        `🚨 Flood Guard: ${parsed.length} jobs detected at once. Switching to CHECK ONLY (no auto-accept) for the rest of the run.`,
+                        `Flood Guard: ${parsed.length} jobs → check-only for rest of run`
+                    ).catch(() => {});
                 }
 
-                // 2. Check for "No Jobs" Phrase (best-effort; Sniper drives real detection)
-                console.log(`[Agent ${activeSpotter.id}] Checking for target phrase...`);
-                let phraseFound = false;
-                try {
-                    const phraseLocator = activeSpotter.page.getByText(CONFIG.targetPhrase);
-                    await phraseLocator.waitFor({ state: 'visible', timeout: 3000 });
-                    phraseFound = true;
-                } catch (e) {
-                    phraseFound = false;
+                // Always allow re-triggering accepts; Sheets logging has its own dedupe.
+                if (parsed.length > 0) {
+                    triggerSwarm(parsed).catch(err => console.error('Swarm Trigger Error:', err.message));
                 }
 
-                if (phraseFound) {
-                    const elapsed = Date.now() - cycleStart;
-                    const waitTime = Math.max(0, subCycleMs - elapsed);
-                    console.log(`✅ Phrase FOUND (No jobs). Waiting ${(waitTime / 1000).toFixed(1)}s to complete sub-cycle...`);
-                    await activeSpotter.page.waitForTimeout(waitTime);
-                } else {
-                    // Logic already triggered by JSON or phrase is missing (loading?)
-                    if (isDispatching) {
-                        console.log('⏳ Swarm attack currently in progress (Event-Triggered). Waiting for completion...');
-                        while (isDispatching) await activeSpotter.page.waitForTimeout(500);
-                    } else {
-                        console.log('❌ Phrase NOT FOUND but no event triggered. (Server lag?). Waiting for next cycle.');
-                    }
-
-                    const elapsed = Date.now() - cycleStart;
-                    const waitTime = Math.max(0, subCycleMs - elapsed);
-                    await activeSpotter.page.waitForTimeout(waitTime);
-                }
+                // Maintain timing.
+                const elapsed = Date.now() - cycleStart;
+                const waitTime = Math.max(0, subCycleMs - elapsed);
+                await activeSpotter.page.waitForTimeout(waitTime);
 
             } catch (innerError) {
                 console.error(`⚠️ Loop error: ${innerError.message}`);
