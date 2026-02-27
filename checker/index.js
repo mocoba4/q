@@ -1189,6 +1189,16 @@ async function run() {
         }, 0);
     }
 
+    async function waitForSwarmToSettle(timeoutMs) {
+        const start = Date.now();
+        const timeout = Math.max(0, timeoutMs || 0);
+        while (Date.now() - start < timeout) {
+            if (!isDispatching && pendingJobsById.size === 0) return true;
+            try { await Agent1.page.waitForTimeout(100); } catch (_) { /* ignore */ }
+        }
+        return !isDispatching && pendingJobsById.size === 0;
+    }
+
     // Helper: The Swarm Trigger
     async function triggerSwarm(validJobs) {
         const effectiveCheckOnly = CONFIG.checkOnly || forcedCheckOnly;
@@ -1697,6 +1707,14 @@ async function run() {
         await sendDualAlert(`⚠️ Checker Error: ${error.message}`, `Checker Error: ${error.message}`);
         process.exit(1);
     } finally {
+        try {
+            // Best-effort: don't drop in-flight accepts or queued Sheet rows on shutdown.
+            await waitForSwarmToSettle(60000);
+            await sheetsLogger.flushNow();
+        } catch (_) {
+            // ignore
+        }
+
         console.log('Closing browser...');
         await browser.close();
         console.log('Browser closed.');
