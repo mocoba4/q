@@ -135,6 +135,21 @@ const parseCapacity = (str) => {
 const isTruthyEnv = (v) => /^(1|true|on|yes)$/i.test(String(v || '').trim());
 const NUCLEAR_ACCEPT_ENABLED = isTruthyEnv(process.env.NUCLEAR_ACCEPT || '');
 
+function parseAccountIdSet(v, { min = 1, max = 5 } = {}) {
+    const raw = String(v ?? '').trim();
+    if (!raw) return new Set();
+
+    const parts = raw.split(/[\s,]+/g).map(s => String(s || '').trim()).filter(Boolean);
+    const out = new Set();
+    for (const p of parts) {
+        const n = parseInt(p, 10);
+        if (!Number.isFinite(n)) continue;
+        if (n < min || n > max) continue;
+        out.add(n);
+    }
+    return out;
+}
+
 // When enabled, we ignore jobs tagged as "high-poly" / "high poly".
 // Enabled: LOWPOLY_ONLY_MODE=1, Disabled: LOWPOLY_ONLY_MODE=0 (or unset)
 const LOWPOLY_ONLY_MODE = isTruthyEnv(process.env.LOWPOLY_ONLY_MODE || '');
@@ -840,8 +855,24 @@ async function run() {
         console.log(`🧹 TITLE_FILTER_KEYWORDS is ENABLED. Ignoring jobs whose title contains any of ${TITLE_FILTER_KEYWORDS.length} keyword(s).`);
     }
 
+    // Check-only override: allow accepting on specific account IDs even when CHECK_ONLY=1.
+    // This is ignored when CHECK_ONLY is disabled.
+    const CHECK_ONLY_OVERRIDE_RAW = process.env.OVERRIDE_CHECK_ONLY || process.env.OVERRIDE_CHECK_ONLY_ACCOUNTS || '';
+    const checkOnlyOverrideRequested = CONFIG.checkOnly ? parseAccountIdSet(CHECK_ONLY_OVERRIDE_RAW, { min: 1, max: 5 }) : new Set();
+    // Only keep overrides for accounts that are actually active.
+    const activeAccountIdSet = new Set(ACTIVE_ACCOUNTS.map(a => a.id));
+    const checkOnlyOverrideAcceptIds = new Set(
+        Array.from(checkOnlyOverrideRequested).filter(id => activeAccountIdSet.has(id))
+    );
+
     if (CONFIG.checkOnly) {
-        console.log('🛡️ SAFETY MODE: "CHECK_ONLY" is ON. Auto-Accept disabled.');
+        if (checkOnlyOverrideAcceptIds.size > 0) {
+            console.log(
+                `🛡️ CHECK_ONLY is ON, but OVERRIDE_CHECK_ONLY is ACTIVE. Auto-accept ENABLED for account(s): ${Array.from(checkOnlyOverrideAcceptIds).sort((a, b) => a - b).join(', ')}`
+            );
+        } else {
+            console.log('🛡️ SAFETY MODE: "CHECK_ONLY" is ON. Auto-Accept disabled.');
+        }
     }
 
     if (!CONFIG.url || !CONFIG.loginUrl) {
@@ -886,8 +917,8 @@ async function run() {
 
     const showBrowser = process.env.SHOW_BROWSER === 'true';
 
-    // Safety Mode Override: If checkOnly, only use the first account for spotting
-    const effectiveAccounts = CONFIG.checkOnly ? [ACTIVE_ACCOUNTS[0]] : ACTIVE_ACCOUNTS;
+    // Always initialize all active accounts; check-only should only affect accepting behavior.
+    const effectiveAccounts = ACTIVE_ACCOUNTS;
     console.log(`Debug: Initializing ${effectiveAccounts.length} accounts.`);
 
     const browser = await chromium.launch({ headless: !showBrowser });
@@ -1201,7 +1232,14 @@ async function run() {
 
     // Helper: The Swarm Trigger
     async function triggerSwarm(validJobs) {
-        const effectiveCheckOnly = CONFIG.checkOnly || forcedCheckOnly;
+        const overrideAllowsAccepting = CONFIG.checkOnly && checkOnlyOverrideAcceptIds.size > 0;
+        // Flood guard always wins: even with override, forced check-only disables accepting.
+        const effectiveCheckOnly = forcedCheckOnly || (CONFIG.checkOnly && !overrideAllowsAccepting);
+
+        // When check-only override is active, only these accounts are allowed to accept.
+        const dispatchAgents = overrideAllowsAccepting
+            ? agents.filter(a => checkOnlyOverrideAcceptIds.has(a.id))
+            : agents;
 
         // Title keyword filter: ignore matching jobs and always log them.
         // This has priority over lowpoly-only and price filters.
@@ -1331,7 +1369,7 @@ async function run() {
         }
 
         const agentQueues = {};
-        agents.forEach(a => agentQueues[a.id] = []);
+        dispatchAgents.forEach(a => agentQueues[a.id] = []);
         const currentCapacities = JSON.parse(JSON.stringify(expectedCapacityCache));
 
         const assignedJobIds = new Set();
@@ -1340,7 +1378,7 @@ async function run() {
             const requiredType = job.isGrouped ? 'grouped' : 'single';
             // Explicitly iterate agents in order (1, 2, 3...) to ensure Greedy Assignment
             // Agent 1 gets first dibs on the highest price job, then the next, until full.
-            const bestAgent = agents.find(a => currentCapacities[a.id][requiredType].available > 0);
+            const bestAgent = dispatchAgents.find(a => currentCapacities[a.id][requiredType].available > 0);
 
             if (bestAgent) {
                 agentQueues[bestAgent.id].push(job);
@@ -1363,7 +1401,7 @@ async function run() {
                 // Nuclear mode: serialize accepts globally (highest price first), spaced by a small delay.
                 // This avoids blasting many POSTs at once.
                 const jobToAgent = new Map();
-                for (const agent of agents) {
+                for (const agent of dispatchAgents) {
                     const q = agentQueues[agent.id] || [];
                     for (const j of q) jobToAgent.set(String(j.id), agent);
                 }
@@ -1423,7 +1461,7 @@ async function run() {
                     }
                 }
             } else {
-                await Promise.all(agents.map(async (agent) => {
+                await Promise.all(dispatchAgents.map(async (agent) => {
                     const queue = agentQueues[agent.id];
                     if (queue && queue.length > 0) {
                         console.log(`[Account ${agent.id}] Parallel attack on ${queue.length} jobs...`);

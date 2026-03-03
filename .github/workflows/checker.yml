@@ -60,6 +60,7 @@ jobs:
         LOWPOLY_ONLY_MODE: ${{ secrets.LOWPOLY_ONLY_MODE }}
         TITLE_FILTER_KEYWORDS: ${{ secrets.TITLE_FILTER_KEYWORDS }}
         CHECK_ONLY: ${{ secrets.CHECK_ONLY }}
+        OVERRIDE_CHECK_ONLY: ${{ secrets.OVERRIDE_CHECK_ONLY }}
         ACCOUNT_COUNT: ${{ secrets.ACCOUNT_COUNT }}
         CG_EMAIL2: ${{ secrets.CG_EMAIL2 }}
         CG_PASSWORD2: ${{ secrets.CG_PASSWORD2 }}
