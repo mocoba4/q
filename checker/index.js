@@ -1646,7 +1646,8 @@ async function run() {
             try {
                 // Dual-spotter check cadence: split CHECK_INTERVAL across Account 1 + Account 2.
                 // This yields: A1 check, wait half-interval, A2 check, wait half-interval, repeat.
-                const spotters = (!CONFIG.checkOnly && Agent2) ? [Agent1, Agent2] : [Agent1];
+                // NOTE: This should behave the same in check-only mode; check-only only disables accepting.
+                const spotters = Agent2 ? [Agent1, Agent2] : [Agent1];
                 const baseCycleMs = burstActive ? BURST_REFRESH_MS : MIN_CYCLE_DURATION;
                 const subCycleMs = burstActive
                     ? BURST_REFRESH_MS
