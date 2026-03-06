@@ -1569,13 +1569,23 @@ async function run() {
 
         // Build a lookup of coverImage id -> URL path from the included payload.
         const coverImageUrlById = new Map();
+        const workflowNameById = new Map();
         const included = Array.isArray(json?.included) ? json.included : [];
         for (const inc of included) {
-            if (!inc || inc.type !== 'coverImage') continue;
+            if (!inc) continue;
             const id = inc.id;
             const attrs = inc.attributes || {};
-            const u = attrs.url || attrs.thumbnailUrl || attrs.galleryThumbnailUrl || '';
-            if (id && u) coverImageUrlById.set(String(id), String(u));
+
+            if (inc.type === 'coverImage') {
+                const u = attrs.url || attrs.thumbnailUrl || attrs.galleryThumbnailUrl || '';
+                if (id && u) coverImageUrlById.set(String(id), String(u));
+                continue;
+            }
+
+            if (inc.type === 'workflow') {
+                const name = String(attrs.name || '').trim();
+                if (id && name) workflowNameById.set(String(id), name);
+            }
         }
 
         const toAbsoluteUrl = (u) => {
@@ -1594,6 +1604,9 @@ async function run() {
             const coverId = item?.relationships?.coverImage?.data?.id;
             const coverPath = coverId ? coverImageUrlById.get(String(coverId)) : '';
             const imageUrl = toAbsoluteUrl(coverPath);
+
+            const workflowId = item?.relationships?.workflow?.data?.id;
+            const workflow = workflowId ? (workflowNameById.get(String(workflowId)) || '') : '';
 
             const jobUrl = `${CONFIG.url}/${item.id}/brief`;
             const price = getJobPriceFromAttributes(attr);
@@ -1615,6 +1628,7 @@ async function run() {
                 id: item.id,
                 url: jobUrl,
                 imageUrl,
+                workflow,
                 uid,
                 nextRoundDeadline,
                 roundDeadline: nextRoundDeadline,
