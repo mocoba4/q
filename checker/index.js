@@ -1563,10 +1563,37 @@ async function run() {
     }
 
     function parseJobsFromAvailableRequests({ json, spotterAgent }) {
+        const origin = (() => {
+            try { return new URL(CONFIG.url).origin; } catch (_) { return ''; }
+        })();
+
+        // Build a lookup of coverImage id -> URL path from the included payload.
+        const coverImageUrlById = new Map();
+        const included = Array.isArray(json?.included) ? json.included : [];
+        for (const inc of included) {
+            if (!inc || inc.type !== 'coverImage') continue;
+            const id = inc.id;
+            const attrs = inc.attributes || {};
+            const u = attrs.url || attrs.thumbnailUrl || attrs.galleryThumbnailUrl || '';
+            if (id && u) coverImageUrlById.set(String(id), String(u));
+        }
+
+        const toAbsoluteUrl = (u) => {
+            const s = String(u || '').trim();
+            if (!s) return '';
+            if (/^https?:\/\//i.test(s)) return s;
+            if (origin && s.startsWith('/')) return `${origin}${s}`;
+            return s;
+        };
+
         const rawJobs = json?.data || [];
         const parsed = rawJobs.map(item => {
             const attr = item.attributes || {};
             const isGrouped = attr.partOfGroupOfRequests === true;
+
+            const coverId = item?.relationships?.coverImage?.data?.id;
+            const coverPath = coverId ? coverImageUrlById.get(String(coverId)) : '';
+            const imageUrl = toAbsoluteUrl(coverPath);
 
             const jobUrl = `${CONFIG.url}/${item.id}/brief`;
             const price = getJobPriceFromAttributes(attr);
@@ -1587,6 +1614,7 @@ async function run() {
             return {
                 id: item.id,
                 url: jobUrl,
+                imageUrl,
                 uid,
                 nextRoundDeadline,
                 roundDeadline: nextRoundDeadline,
