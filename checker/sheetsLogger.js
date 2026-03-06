@@ -911,7 +911,17 @@ function createSheetsLogger() {
             }).catch(() => null);
 
             const rawHeaderRow = rawHeaderRes?.data?.values?.[0] || [];
-            if (rawHeaderRow.length === 0) {
+            const expectedHeaderRow = headerValues?.[0] || [];
+            const expectedLen = expectedHeaderRow.length;
+            const actualLen = rawHeaderRow.length;
+            const actualLast = safeString(rawHeaderRow[expectedLen - 1]).trim();
+            const expectedLast = safeString(expectedHeaderRow[expectedLen - 1]).trim();
+
+            // Write/repair headers if:
+            // - header row is empty, OR
+            // - header row is shorter than the current schema, OR
+            // - the last expected header doesn't match (schema changed).
+            if (actualLen === 0 || (expectedLen > 0 && (actualLen < expectedLen || actualLast !== expectedLast))) {
                 await sheetsClient.spreadsheets.values.update({
                     spreadsheetId,
                     range: `${rawTitle}!A1:R1`,
